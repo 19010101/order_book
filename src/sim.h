@@ -1,3 +1,4 @@
+#pragma once
 #include "ob.h"
 
 #include <boost/random/exponential_distribution.hpp> 
@@ -10,9 +11,7 @@
 
 #include <cmath>
 #include <limits>
-#include <queue>
 #include <stdexcept>
-
 
 namespace SDB { 
     //this code is not tested at all!
@@ -90,8 +89,9 @@ namespace SDB {
                 throw std::runtime_error("What is this type? " + std::to_string(int(msg_type)) );
             return msg;
         }
-
+        CerrLogger( const MemoryManager<Order> & ) {} 
         void log( const NotifyMessageType , const Order & , const TimeType , const SizeType , const SizeType ) { }
+        void log( const MatchingEngine & ) {}
         /*
         void log( 
                 const NotifyMessageType msg_type, 
@@ -137,6 +137,7 @@ namespace SDB {
             auto [dt, d_price, size, side] = client_type_.get_next_placement_info();
             const double real_price = std::isnan(wm) ? d_price : wm + d_price;
             price_ = std::lround( real_price );
+            show_ = 2;
             side_ = side;
             size_ = size;
             if (not size) throw std::runtime_error("Zero size??");
@@ -215,15 +216,15 @@ namespace SDB {
 
         };
 
-        template <typename Logger = CerrLogger> 
+        template <INotifier Logger = CerrLogger> 
         struct NotificationHandler : public Logger { 
             MatchingEngine & eng_;
 
             Ptr::ByCID by_cid_;
-            Ptr::ByOID by_oid_;
-            Ptr::ByTime by_time_ ; 
+            mutable Ptr::ByOID by_oid_;
+            mutable Ptr::ByTime by_time_ ; 
 
-            NotificationHandler( MatchingEngine & eng ) : eng_(eng) { } ;
+            NotificationHandler( MatchingEngine & eng ) : Logger(eng.mem_), eng_(eng)  { } ;
 
             void add( ClientState * ptr ) { 
                 auto handle = by_time_.emplace( ptr );
@@ -231,29 +232,33 @@ namespace SDB {
                 by_cid_.emplace( *handle );
             }
 
-            Ptr get_by_cid( ClientIDType cid ) { 
+            Ptr get_by_cid( ClientIDType cid ) const { 
                 auto ptr_it = by_cid_.find( cid );
                 if (ptr_it == by_cid_.end()) 
-                    throw std::runtime_error("received act for an unknown client: " + std::to_string(cid));
+                    throw std::runtime_error("received ack for an unknown client: " + std::to_string(cid));
                 return *ptr_it;
             }
 
-            void operator()( const NotifyMessageType msg_type , const Order & order, const TimeType notif_time, 
+            void log( const MatchingEngine & eng ) { Logger::log(eng); }
+
+            void log( const NotifyMessageType msg_type , const Order & order, const TimeType notif_time, 
                     const SizeType traded_size , const PriceType traded_price 
             ) { 
                 Logger::log( msg_type, order, notif_time, traded_size, traded_price );
                 Ptr p = get_by_cid(order.client_id_);
                 if (msg_type==NotifyMessageType::Ack) { 
-                    if (p.active_order_id() != std::numeric_limits<OrderIDType>::max()) 
-                        throw std::runtime_error("received act but there is already an active order: " + std::to_string(p.active_order_id()));
-                    //it is not supposed to be in by_oid_
-                    //but remove it from by time because we will set its cancellation time:
-                    p.p_->next_action_time_ = notif_time + p.p_->client_type_.get_cancellation_dt();
-                    p.p_->action_ = 1; //next action is cancellation; 
-                    p.p_->active_order_id_ = order.order_id_ ; 
-                    by_time_.update( p.handle_ );
-                    //by_time_.emplace( p );
-                    by_oid_.emplace( p );
+                    if (p.active_order_id() != std::numeric_limits<OrderIDType>::max()) { 
+                        //throw std::runtime_error("received ack but there is already an active order: " + std::to_string(p.active_order_id()));
+                        order.is_hidden_ = true;
+                    } else {
+                        //new order
+                        p.p_->next_action_time_ = notif_time + p.p_->client_type_.get_cancellation_dt();
+                        p.p_->action_ = 1; //next action is cancellation; 
+                        p.p_->active_order_id_ = order.order_id_ ; 
+                        by_time_.update( p.handle_ );
+                        //by_time_.emplace( p );
+                        by_oid_.emplace( p );
+                    }
                 } else if (msg_type==NotifyMessageType::End) {
                     if (p.active_order_id() != order.order_id_) 
                         throw std::runtime_error("received end but this is not our order : " + std::to_string(p.active_order_id()));
@@ -265,6 +270,7 @@ namespace SDB {
                     by_time_.update( p.handle_ );
                     by_oid_.emplace( p );
                 } else if (msg_type==NotifyMessageType::Trade) {
+                } else if (msg_type==NotifyMessageType::Cancel) {
                 } else {
                     throw std::logic_error("Not implemented " + std::to_string(int(msg_type)) );
                 }
@@ -279,11 +285,185 @@ namespace SDB {
         };
     };
 
+    template <INotifier  N>
+        void simulate(
+                const std::vector<std::tuple<ClientType, int>> & client_types_and_sizes , 
+                MatchingEngine & eng,
+                ClientState::NotificationHandler<N> & handler ,
+                const TimeType TMax
+                ) {
+
+
+            ClientIDType n_clients = 0;
+            for (const auto & tpl : client_types_and_sizes) n_clients += std::get<1>(tpl);
+
+            std::vector<ClientState> client_states; 
+            client_states.reserve( n_clients );
+            n_clients = 0; 
+            for (const auto & tpl : client_types_and_sizes)  
+                for (int i = 0; i < std::get<1>(tpl) ; ++i) 
+                    client_states.emplace_back( std::get<0>(tpl) , n_clients++ );
+
+            for (auto & cs : client_states) {
+                cs.setup_new_order_placement_data(0.0, 0); //set action time
+                handler.add(&cs);
+            }
+            while ( eng.time_ < TMax ) { 
+                const ClientState::Ptr & ptr = handler.get_next_action();
+                const ClientState & state = *ptr.p_;
+                if (state.next_action_time_>=TMax) break;
+                eng.set_time( state.next_action_time_ );
+                //send the ptr to the back of queue : 
+                state.next_action_time_ = std::numeric_limits<TimeType>::max();
+                handler.by_time_.update( ptr.handle_ );
+                if (state.action_ == 0) {//place new order
+                    eng.add_simulation_order( state.client_id_, state.price_, state.size_,
+                            state.show_, state.side_, false, handler);
+                } else if (state.action_ == 1) { //cancel
+                    eng.cancel_order( state.active_order_id_, handler );
+                }
+                handler.log( eng );
+            }
+
+            eng.set_time( TMax );
+            eng.shutdown(handler);
+
+            //handler.log( eng );
+        }
+
+    struct ReplayData { 
+        struct MSG { 
+            const TimeType time_ ; 
+            const ClientIDType cid_ ;
+            const OrderIDType oid_;
+            const PriceType order_price_, trade_price_ ;
+            const SizeType shown_size_, trade_size_ ; 
+            const NotifyMessageType mtype_ ;
+            const Side side_;
+            const bool is_hidden_ ; 
+
+            std::string str() const {
+                std::ostringstream out ;
+                out << "<M: time:" << time_*1e-9 
+                    << ' ' << std::to_string(mtype_)
+                    << " oid:" << oid_ 
+                    << " po:" << order_price_ 
+                    << " pt:" << trade_price_ 
+                    << " ss:" << shown_size_ 
+                    << " ts:" << trade_size_ 
+                    << " side:" << std::to_string( side_ ) 
+                    << " h:" << std::to_string( is_hidden_ ) ;
+                return out.str();
+            }
+
+            bool check_equivalent( const MSG & other ) const { 
+                return 
+                    time_ == other.time_ and
+                    oid_ == other.oid_ and
+                    order_price_ == other.order_price_ and
+                    trade_price_ == other.trade_price_ and
+                    shown_size_ == other.shown_size_ and
+                    trade_size_ == other.trade_size_ and
+                    mtype_ == other.mtype_ and 
+                    side_ == other.side_ and
+                    is_hidden_ == other.is_hidden_ ;
+
+            }
+            struct TimeLess { 
+                bool operator()( const MSG & a, const MSG & b ) const {
+                    return a.time_ < b.time_ ;
+                }
+            };
+        };
+        std::vector<MSG> msgs_;
+        std::vector< 
+            std::tuple<
+                TimeType, 
+                std::vector< std::tuple< PriceType, Side, MemoryManager<Order>::list_type > >
+                >
+            > snapshots_ ; 
+        MemoryManager<Order> & mem_;
+
+        ReplayData( MemoryManager<Order> & mem ) : mem_(mem) {} ;
+        ReplayData( const ReplayData & ) = delete ; 
+        ReplayData & operator=( const ReplayData & ) = delete;
+        ~ReplayData() {
+            free_orders();
+        }
+        void log( const NotifyMessageType mtype , const Order & o, const TimeType t, const SizeType trade_size = 0, const PriceType trade_price = 0) { 
+            //std::cerr << "log notif " << msgs_.size() << ' ' << t*1e-9<< ' ' << std::to_string(mtype) << ' ' << std::to_string(o) << '\n'; 
+            msgs_.emplace_back( MSG( t, o.client_id_, o.order_id_, o.price_, trade_price, o.shown_size_, trade_size, mtype, o.side_, o.is_hidden_ ) );
+        };
+        void log( const MatchingEngine & eng ) {
+            //std::cerr << "log " << eng << std::endl;
+            snapshots_.emplace_back( eng.snapshot() );
+        }
+        void free_orders( ) { 
+            struct Disposer {
+                MemoryManager<Order> & mem_;
+                void operator()( Order * t ) const {//Disposer
+                    mem_.free( *t );
+                }
+            } ;
+            Disposer disposer(mem_);
+            for ( auto & v : snapshots_ ) 
+                for ( auto & tpl : std::get<1>(v) ) 
+                    while ( not std::get<2>(tpl).empty() ) 
+                        std::get<2>(tpl).pop_front_and_dispose( disposer );
+        }
+    };
+
+    struct replay_error : public std::runtime_error {
+        explicit replay_error( const std::string & what) : std::runtime_error(what) {}
+    };
+
+    template <INotifier N> 
+        void replay( const std::vector<ReplayData::MSG> & msgs, MatchingEngine & eng, N & notifier ) { 
+            auto it = msgs.begin(); 
+            while ( it != msgs.end() ) { 
+                eng.set_time( it->time_ );
+                switch ( it->mtype_ ) {
+                    case NotifyMessageType::Ack : 
+                        {
+                            const auto jt = std::upper_bound( it, msgs.end(), *it , ReplayData::MSG::TimeLess()) ;
+                            if (jt != msgs.end() )
+                                if ( jt->time_ <= it->time_ )
+                                    throw replay_error( std::string("time order has failed: ") + std::to_string(jt->time_) + " vs " + std::to_string( it->time_ ) );
+                            for (auto kt = it + 1; kt  < jt ; ++kt ) {
+                                if( kt->time_ != it->time_ ) 
+                                    throw replay_error( std::string("time should be same: ") + std::to_string(kt->time_) + " vs " + std::to_string( it->time_ ) );
+                                if (kt->mtype_== NotifyMessageType::Ack and kt->oid_ != it->oid_ )
+                                    eng.add_replay_order(kt->oid_, kt->cid_, kt->order_price_, kt->shown_size_, kt->side_, false, notifier);
+                            }
+                            eng.add_replay_order(it->oid_, it->cid_, it->order_price_, it->shown_size_, it->side_, false, notifier);
+                            for (auto kt = it + 1; kt  < jt ; ++kt ) {
+                                if (kt->mtype_== NotifyMessageType::Ack and kt->oid_ == it->oid_ )
+                                    eng.add_replay_order(kt->oid_, kt->cid_, kt->order_price_, kt->shown_size_, kt->side_, false, notifier);
+                            }
+                            notifier.log(eng);
+                            it = jt;
+                        }
+                        break;
+                    case NotifyMessageType::Cancel : 
+                        eng.cancel_order(it->oid_, notifier);
+                        notifier.log(eng);
+                        ++it; 
+                        break;
+                    case NotifyMessageType::End : 
+                    case NotifyMessageType::Trade : 
+                        ++it;
+                        break;
+                } 
+            }
+
+        }
+
+
 }
 
 namespace std { 
     using namespace SDB;
-    string to_string( const SDB::ClientState & s ) { 
+    inline string to_string( const SDB::ClientState & s ) { 
         const std::string next_time = 
             s.next_action_time_ == std::numeric_limits<TimeType>::max() ? 
             "-" : std::to_string(s.next_action_time_*1e-9) + "s" ; 

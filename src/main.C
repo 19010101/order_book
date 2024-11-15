@@ -73,7 +73,7 @@ int main(const int argc,const char ** argv) {
                 " norders:" << eng.mem_.used_ << ":" << n_orders << ":" << n_orders2 << 
                 " bidlevels:" << eng.all_bids_.size() << 
                 " asklevels:" << eng.all_offers_.size()  << 
-                " order_ptr_set:" << eng.set_.size()  <<  //not a hash set 
+                " order_ptr_set:" << eng.ptr_set_.size()  <<  //not a hash set 
                 " by_cid:" << handler.by_cid_.size()  <<  //hashset
                 " by_oid:" << handler.by_oid_.size()  <<  //hashset
                 " by_time:" << handler.by_time_.size()  << //priority queue 
@@ -81,8 +81,8 @@ int main(const int argc,const char ** argv) {
             lastsec = secs;
         }
         if (state.action_ == 0) {//place new order
-            eng.add_order( state.client_id_, state.price_, state.size_,
-                    state.show_, state.side_, handler);
+            eng.add_simulation_order( state.client_id_, state.price_, state.size_,
+                    state.show_, state.side_, false, handler);
         } else if (state.action_ == 1) { //cancel
             eng.cancel_order( state.active_order_id_, handler );
         }

@@ -5,20 +5,49 @@
 #include <stdexcept>
 #include <unordered_set>
 #include <limits>
+#include <sstream>
 
 #include "memory_manager.h"
 
 //#include <boost/intrusive/list.hpp>
 
 namespace SDB { 
+    enum class Side : uint8_t { Bid, Offer } ; 
+
+    enum class NotifyMessageType : uint8_t { Ack, Trade, Cancel, End } ; 
+
+}
+
+namespace std { 
+    using namespace SDB;
+    inline string to_string( const NotifyMessageType & mtype ) { 
+        switch (mtype) {
+            case NotifyMessageType::Ack : return "Ack" ; 
+            case NotifyMessageType::Trade : return "Trade" ; 
+            case NotifyMessageType::Cancel : return "Cancel" ; 
+            case NotifyMessageType::End : return "End" ; 
+        }
+        throw std::runtime_error("WTF to string mtype");
+    }
+    inline string to_string( const Side & side ) { 
+        switch(side) {
+            case Side::Bid : return "bid" ;
+            case Side::Offer : return "ask" ;
+        }
+        throw std::runtime_error("WTF to string side");
+    }
+}
+
+namespace SDB { 
+
     using OrderIDType = uint64_t ; 
     using TimeType = uint64_t ; 
     using ClientIDType = uint32_t;
     using PriceType = int16_t;
     using SizeType = uint16_t;
-    enum class Side : uint8_t { Bid, Offer } ; 
 
-    Side get_other_side( Side s ) {
+
+    inline Side get_other_side( Side s ) {
         switch (s) {
             case Side::Bid : return Side::Offer ; 
             case Side::Offer : return Side::Bid ; 
@@ -26,18 +55,26 @@ namespace SDB {
         throw std::runtime_error("Come on");
     }
 
-    enum class NotifyMessageType : uint8_t { Ack, Trade, End } ; 
-
     struct Order;
-
+    struct MatchingEngine ;
     template <typename T>
         concept INotifier = requires( T & notifier, const NotifyMessageType mtype, const Order & o, const TimeType now, 
-                const SizeType traded_size, const PriceType traded_price ) 
+                const SizeType traded_size, const PriceType traded_price , const MatchingEngine & eng) 
         {
-            notifier( mtype, o, now , traded_size, traded_price ) ;
+            notifier.log( mtype, o, now , traded_size, traded_price ) ;
+            notifier.log( eng );
         };
 
-    void NOOPNotify( const NotifyMessageType , const Order & , const TimeType, const SizeType = 0, const PriceType = 0) { };
+    struct NOOPNotify {
+        void log( const NotifyMessageType , const Order & , const TimeType, const SizeType = 0, const PriceType = 0) const {}
+        void log( const MatchingEngine & ) const {}
+        static NOOPNotify & instance(){ 
+            static NOOPNotify n; 
+            return n;
+        }
+    };
+
+    //inline void NOOPNotify( const NotifyMessageType , const Order & , const TimeType, const SizeType = 0, const PriceType = 0) { };
 
     struct Order : public MemoryManaged{
         OrderIDType order_id_ ; 
@@ -49,56 +86,94 @@ namespace SDB {
         mutable SizeType remaining_size_ ; 
         mutable SizeType shown_size_ ; 
         Side side_ ; 
+        bool is_shadow_ ;  //for simulation and strategy testing
+        mutable bool is_hidden_ ; //this will be set by an observer who doesn't know total size or remaining size.
 
-        
-        void reset( OrderIDType oid, TimeType t, ClientIDType cid, PriceType p, SizeType s, SizeType show, Side side) 
-        {
-            order_id_ = oid;
-            creation_time_ = t ;
-            client_id_ = cid;
-            price_ = p;
-            total_size_ = s ;
-            show_ = show;
-            remaining_size_ = s;
-            shown_size_ = 0;
-            side_ = side;
-            replenish();
+
+        template <INotifier N>
+            void reset( OrderIDType oid, TimeType t, ClientIDType cid, PriceType p, SizeType s, SizeType show, Side side, bool is_shadow, N & notify ) 
+            {
+                order_id_ = oid;
+                creation_time_ = t ;
+                client_id_ = cid;
+                price_ = p;
+                total_size_ = s ;
+                show_ = show;
+                remaining_size_ = s;
+                shown_size_ = 0;
+                side_ = side;
+                is_shadow_ = is_shadow;
+                is_hidden_ = false;
+                replenish(notify, t);
+            }
+
+        void clone( const Order & o ) { 
+            order_id_  =        o.order_id_ ; 
+            creation_time_  =   o.creation_time_ ; 
+            client_id_  =       o.client_id_ ;
+            price_  =           o.price_ ; 
+            total_size_  =      o.total_size_ ; 
+            show_  =            o.show_ ; 
+            remaining_size_  =  o.remaining_size_ ; 
+            shown_size_  =      o.shown_size_ ; 
+            side_  =            o.side_ ; 
+            is_shadow_  =       o.is_shadow_ ;  
+            is_hidden_  =       o.is_hidden_ ;     
         }
-
         Order() 
         {
             clear();
         }
 
-        void replenish() const { 
-            if (shown_size_ != 0)
-                throw std::runtime_error("Cannot replenish like this!");
-            shown_size_ =  std::min(show_,remaining_size_) ;
-        }
+        template <INotifier N>
+            void replenish( N & notify, const TimeType t) const { 
+                if (shown_size_ != 0)
+                    throw std::runtime_error("Cannot replenish like this!");
+                shown_size_ =  std::min(show_,remaining_size_) ;
+                if (shown_size_ != 0 ) 
+                    notify.log( NotifyMessageType::Ack , *this, t, 0, 0 ); //external world will see a new order popping at the back.
+            }
 
         template <INotifier N>
             SizeType match( Order & aggressive_order , const TimeType now, N & notify) { 
                 if (aggressive_order.side_ == side_) throw std::runtime_error("WTF!!!"); 
                 const SizeType traded_size = std::min(aggressive_order.shown_size_ , shown_size_ );
                 if (traded_size==0) throw std::runtime_error("WTF");
-                aggressive_order._traded( traded_size , price_ , now, notify);
-                _traded( traded_size , price_ , now, notify);
+                aggressive_order._traded( traded_size , price_ , now, is_shadow_, notify);
+                _traded( traded_size , price_ , now, aggressive_order.is_shadow_, notify);
                 return traded_size;
             }
 
         
         void clear() { 
-            reset(-1,-1, -1, -1,0,0,Side::Offer);
+            reset(-1,-1, -1, -1,0,0,Side::Offer, false, NOOPNotify::instance());
         }
 
+        static bool reduce_size( const bool shadow, const bool other_side_shadow ) { 
+            /*
+             * f f -> t # usual case, nothing is shadow
+             * f t -> f # if self is not shadow, don't reduce it's size
+             * t f -> t # if self is shadow, reduce irrespective of if other side is shadow or not.
+             * t t -> t  
+             *
+             */
+            if (
+                    (not shadow and not other_side_shadow ) or 
+                    (    shadow ) 
+               ) return true;
+            else
+                return false;
+        }
         private: 
         template <INotifier N>
-            void _traded(SizeType traded_size, PriceType traded_price, const TimeType now, N & notify) const { 
-                remaining_size_ -= traded_size;     
-                shown_size_ -= traded_size;     
-                notify( NotifyMessageType::Trade , *this, now, traded_size, traded_price );
-                const bool finished = remaining_size_==0;
-                if (finished) notify( NotifyMessageType::End, *this, now , 0, 0 );
+            void _traded(SizeType traded_size, PriceType traded_price, const TimeType now, const bool other_side_shadow, N & notify) const { 
+                if ( reduce_size( is_shadow_ , other_side_shadow ) ) { 
+                    remaining_size_ -= traded_size;     
+                    shown_size_ -= traded_size;     
+                }
+                notify.log( NotifyMessageType::Trade , *this, now, traded_size, traded_price );
+                const bool finished = shown_size_==0;
+                if (finished) notify.log( NotifyMessageType::End, *this, now , 0, 0 );
             }
         public : 
         struct Hash { 
@@ -119,9 +194,32 @@ namespace SDB {
                 return a == b->order_id_;
             }
         };
-        using PtrSet = std::unordered_set< Order*, typename Order::Hash, typename  Order::Eq>;
+        using PtrSet = std::unordered_multiset< Order*, typename Order::Hash, typename  Order::Eq>;
 
     };
+
+}
+
+namespace std { 
+    using namespace SDB;
+    inline string to_string( const Order & o ) { 
+        std::ostringstream out; 
+        out << "<O: c: " << o.creation_time_*1e-9
+            << " oid: " << o.order_id_  
+            << " " << std::to_string(o.side_)  
+            << " p: " << o.price_  
+            //<< " ts: " << o.total_size_  
+            << " show: " << o.show_  
+            //<< " rs: " << o.remaining_size_  
+            << " ss: " << o.shown_size_  
+            << " shad: " << std::to_string(o.is_shadow_)  
+            << " h: " << std::to_string(o.is_hidden_)  
+            ;
+        return out.str();
+    }
+}
+
+namespace SDB { 
 
     struct Level {
         //sub class
@@ -157,14 +255,32 @@ namespace SDB {
         Level( PriceType p, Side s, MemoryManager<Order> & mem) : 
             price_(p), side_(s) , mem_(mem) , orders_() {}
 
+        friend std::ostream & operator<<(std::ostream & out, const Level & l ) {
+            out << "<L: " << std::to_string( l.side_ ) 
+                << " p: " << l.price_ ;
+            for (const auto & o : l.orders_ )  {
+                out << "(id:" << o.order_id_ << ",s:" << o.shown_size_ << ",rs:" << o.remaining_size_ << ')' ;
+            }
+            return out;
+        }
+
+        auto snapshot() const {
+            std::tuple< PriceType, Side, MemoryManager<Order>::list_type > ret;
+            std::get<0>(ret) = price_;
+            std::get<1>(ret) = side_;
+            for (const Order & o : orders_ ) { 
+                Order & clone = mem_.get_unused() ; 
+                clone.clone(o); 
+                std::get<2>(ret).push_back( clone );
+            }
+            return ret;
+        }
         
-        void add_order( Order & o, Order::PtrSet & set ) const { 
+        void add_order( Order & o, Order::PtrSet & ptr_set ) const { 
             if (o.price_ != price_ or o.side_ != side_ )
                 throw std::runtime_error("Can't add this order to this level!");
             orders_.push_back( o );
-            auto pr =set.insert( &o );
-            if (not pr.second) 
-                throw std::runtime_error("Cannot insert oid");
+            ptr_set.insert( &o );
         }
 
         SizeType total_shown() const {
@@ -181,7 +297,7 @@ namespace SDB {
         }
 
         template <INotifier N>
-            void match( Order & new_order, Order::PtrSet & pointer_set, const TimeType now, N & notify ) const { 
+            void match( Order & new_order, Order::PtrSet & ptr_set, const TimeType now, N & notify ) const { 
                 if (not do_prices_agree(new_order) )
                     return;
                 while (not orders_.empty() && new_order.remaining_size_ > 0) {
@@ -191,90 +307,128 @@ namespace SDB {
                     if (order_in_book.shown_size_==0) {
                         orders_.pop_front();
                         if (order_in_book.remaining_size_!=0) { //hidden
-                            order_in_book.replenish();   
+                            order_in_book.replenish(notify, now);   
                             orders_.push_back( order_in_book ); 
                         } else {
-                            size_t n_erased = pointer_set.erase( &order_in_book) ; 
+                            size_t n_erased = 0; 
+                            auto equal_range = ptr_set.equal_range(&order_in_book);
+                            const size_t total_orders_with_same_oid = std::distance( equal_range.first, equal_range.second );
+                            for ( auto it = equal_range.first; it != equal_range.second; ++it )
+                                if ( *it == &order_in_book ) { 
+                                    ptr_set.erase( it );
+                                    n_erased += 1;
+                                    break;
+                                }
                             if (n_erased != 1) 
                                 throw std::runtime_error("Expected to erase 1 but erased " + std::to_string(n_erased) );
-                            mem_.free(order_in_book);
+                            if ( total_orders_with_same_oid == n_erased )
+                                mem_.free(order_in_book);
                         }
                     }
                     if (new_order.shown_size_==0 and new_order.remaining_size_!=0)  //hidden
-                        new_order.replenish();   
+                        new_order.replenish(notify, now);   
                 }
             }
-        void match( Order & new_order, Order::PtrSet & pointer_set, const TimeType now) const { 
-            match( new_order, pointer_set, now, NOOPNotify);
+        void match( Order & new_order, Order::PtrSet & ptr_set, const TimeType now) const { 
+            match( new_order, ptr_set, now, NOOPNotify::instance() );
         }
     };
 
     template <INotifier N> 
         Order & get_new_order(
                 MemoryManager<Order> & mem, 
-                OrderIDType oid, TimeType t, ClientIDType cid, PriceType p, SizeType s, SizeType show, Side side, 
+                OrderIDType oid, TimeType t, ClientIDType cid, PriceType p, SizeType s, SizeType show, Side side, bool is_shadow,
                 N & notify
                 ) {
             Order & o = mem.get_unused();
-            o.reset(oid, t, cid, p, s, show, side);
-            notify( NotifyMessageType::Ack , o, t, 0, 0 );
+            o.reset(oid, t, cid, p, s, show, side, is_shadow, notify);
+            //notify.log( NotifyMessageType::Ack , o, t, 0, 0 );
             return o;
         }
 
-    Order & get_new_order(
+    inline Order & get_new_order(
             MemoryManager<Order> & mem, 
-            OrderIDType oid, TimeType t, ClientIDType cid, PriceType p, SizeType s, SizeType show, Side side
+            OrderIDType oid, TimeType t, ClientIDType cid, PriceType p, SizeType s, SizeType show, Side side, bool is_shadow
             ) {
-        return get_new_order(mem, oid, t, cid, p, s, show, side, NOOPNotify );
+        return get_new_order(mem, oid, t, cid, p, s, show, side, is_shadow, NOOPNotify::instance() );
     }
     struct MatchingEngine { 
         OrderIDType next_order_id_ ; 
         TimeType time_ ; 
         MemoryManager<Order> mem_ ; 
         Level::SET all_bids_, all_offers_ ; 
-        Order::PtrSet set_;
+        Order::PtrSet ptr_set_;
 
         MatchingEngine() : next_order_id_(0), time_(0) { }
 
-        void set_time( TimeType time) { time_ = time ; }
+        friend std::ostream & operator<<(std::ostream & out, const MatchingEngine & l ) {
+            out << "time: " << l.time_*1e-9 << '\n';
+            for (auto it = l.all_offers_.rbegin(); it != l.all_offers_.rend(); ++it)
+                out << *it << '\n' ; 
+            for (auto it = l.all_bids_.begin(); it != l.all_bids_.end(); ++it)
+                out << *it << '\n' ; 
+            return out;
+        }
+
+        auto snapshot() const { 
+            std::vector< std::tuple< PriceType, Side, MemoryManager<Order>::list_type > > ret;
+            ret.reserve( all_offers_.size() + all_bids_.size() );
+            for (auto it = all_offers_.rbegin(); it != all_offers_.rend(); ++it)
+                ret.emplace_back( it->snapshot() );
+            for (auto it = all_bids_.begin(); it != all_bids_.end(); ++it)
+                ret.emplace_back( it->snapshot() );
+            return std::make_tuple( time_, std::move(ret) );
+        }
+
+        //TODO every time order book is changed, call snapshot.
+        void set_time( TimeType time) { 
+            time_ = time ; 
+        }
         Level::SET & get_book( const Side s ) { 
             if (s == Side::Bid) return all_bids_;
             else return all_offers_ ; 
         }
+        private: 
         template <INotifier N> 
-            void add_order( const ClientIDType client_id, const PriceType price, const SizeType size, const SizeType show, const Side side, N & notify) { 
-                //Is there a trade? 
-                //find the order with the same price: 
-                OrderIDType oid = next_order_id_++;
-                //Order new_order(oid, time_, client_id, price, size, show, side);
-                Order & new_order = get_new_order( mem_,oid, time_, client_id, price, size, show, side, notify);
+            void add_order(const OrderIDType oid, const ClientIDType client_id ,const PriceType price, const SizeType size, const SizeType show, const Side side, const bool is_shadow, N & notify) { 
+                Order & new_order = get_new_order( mem_,oid, time_, client_id, price, size, show, side, is_shadow, notify);
                 auto & all_orders_other_side = get_book( get_other_side(side) );
                 while (not all_orders_other_side.empty()) { 
                     const auto top_of_other_side_iter = all_orders_other_side.begin(); 
                     if (not top_of_other_side_iter->do_prices_agree( new_order ) )
                         break;
                     //now match:
-                    top_of_other_side_iter->match( new_order, set_, time_, notify );
+                    top_of_other_side_iter->match( new_order, ptr_set_, time_, notify );
                     if (top_of_other_side_iter->orders_.empty()) 
                         all_orders_other_side.erase( top_of_other_side_iter );
                     if (new_order.remaining_size_==0)
                         break;
                 }
                 if (new_order.remaining_size_) 
-                    get_book( side ).emplace( price, side, mem_ ).first->add_order( new_order, set_ ) ;
+                    get_book( side ).emplace( price, side, mem_ ).first->add_order( new_order, ptr_set_ ) ;
                 else
                     mem_.free(new_order);
+                //notify.log(*this);
             }
-        void add_order( const ClientIDType client_id, const PriceType price, const SizeType size, const SizeType show, const Side side) { 
-            add_order(client_id, price, size, show, side, NOOPNotify );
-        }
+        public:
 
         template <INotifier N> 
+            void add_simulation_order( const ClientIDType client_id, const PriceType price, const SizeType size, const SizeType show, const Side side, const bool is_shadow, N & notify) { 
+                //this method is for simulation. 
+                const OrderIDType oid = next_order_id_++;
+                add_order( oid, client_id, price, size, show, side, is_shadow, notify);
+            }
+        template <INotifier N> 
+            void add_replay_order( const OrderIDType oid, const ClientIDType client_id, const PriceType price, const SizeType size, const Side side, const bool is_shadow, N & notify) { 
+                //this method is for simulation. 
+                add_order( oid, client_id, price, size, size, side, is_shadow, notify);
+            }
+        template <INotifier N> 
             void cancel_order( const OrderIDType oid, N & notify ) { 
-                auto set_it = set_.find(oid);
-                if (set_it==set_.end()) 
-                    throw std::runtime_error("Cannot find oid " + std::to_string(oid));
-                Order & order = **set_it;
+                auto eq_range = ptr_set_.equal_range(oid);
+                if ( 1 != std::distance( eq_range.first, eq_range.second ) )
+                    throw std::runtime_error("cancelling more than one order with oid " +std::to_string(oid)  + " ?" );
+                Order & order = **eq_range.first;
                 Level::SET & levels = get_book( order.side_ );
                 auto levels_iterator = levels.find( order.price_ );
                 if (levels_iterator == levels.end()) 
@@ -282,18 +436,21 @@ namespace SDB {
                 levels_iterator->orders_.erase( levels_iterator->orders_.iterator_to(order) );
                 if ( levels_iterator->orders_.empty() )
                     levels.erase( levels_iterator );
-                notify( NotifyMessageType::End, order, time_ , 0, 0);
-                set_.erase( set_it ) ; 
+                notify.log( NotifyMessageType::Cancel, order, time_ , 0, 0);
+                notify.log( NotifyMessageType::End, order, time_ , 0, 0);
+                ptr_set_.erase( eq_range.first ) ; 
                 mem_.free(order);
+                //notify.log(*this);
             }
         void cancel_order( const OrderIDType oid ) { 
-            cancel_order( oid, NOOPNotify) ;
+            cancel_order( oid, NOOPNotify::instance() ) ;
         }
         template <INotifier N> 
             void shutdown(N & notify) { 
-                while (not set_.empty()) {
-                    OrderIDType oid = (*set_.begin())->order_id_ ; 
+                while (not ptr_set_.empty()) {
+                    OrderIDType oid = (*ptr_set_.begin())->order_id_ ; 
                     cancel_order(oid, notify);
+                    notify.log( *this );
                 }
             }
 
@@ -335,14 +492,4 @@ namespace SDB {
                 return double(bid_prices[0]*ask_sizes[0] + ask_prices[0]*bid_sizes[0])/double(tot);
         }
     };
-}
-namespace std { 
-    using namespace SDB;
-    string to_string( const Side & side ) { 
-        switch(side) {
-            case Side::Bid : return "bid" ;
-            case Side::Offer : return "ask" ;
-        }
-        throw std::runtime_error("WTF");
-    }
 }
