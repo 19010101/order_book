@@ -1,7 +1,9 @@
 #include "memory_manager.h"
 #include "ob.h"
 #include "sim.h"
-#include <sstream>
+#include <boost/random/bernoulli_distribution.hpp>
+#include <limits>
+//#include <sstream>
 
 #define CATCH_CONFIG_MAIN
 #include <catch2/catch.hpp>
@@ -436,72 +438,82 @@ TEST_CASE( "shadow order", "[MatchingEngine]" ) {
     }
 }
 
-TEST_CASE( "replenish", "[ClientState]" ) {
+TEST_CASE( "simulate_a - no trades", "[ClientState]" ) {
     using namespace SDB;
+    
+    std::vector<OrderBookEventWithClientID> msgs ;
+    msgs.emplace_back( OrderBookEvent( 0, 0, 100, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,0 ) ;
+    msgs.emplace_back( OrderBookEvent( 1, 1, 101, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,1 ) ;
+    msgs.emplace_back( OrderBookEvent( 2, 2, 100, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,2 ) ;
+    msgs.emplace_back( OrderBookEvent( 3, 2, 100, 0, 2, 0, NotifyMessageType::Ack, Side::Bid  ) ,3 ) ;
+
+    std::vector<TimeType> times{0,1,2,3} ;
+    std::vector<double> prices{1000,100,100,100} ;
+
+
     MatchingEngine eng;
-    ReplayData handler(eng.mem_);
-    eng.add_replay_order( 0, 0, 100, 2, Side::Offer, false, handler );
-    eng.add_replay_order( 1, 1, 100, 2, Side::Offer, false, handler );
-    //order 0 replenished: 
-    eng.add_replay_order( 0, 0, 100, 2, Side::Offer, false, handler );
-    REQUIRE( eng.all_offers_.contains(100) );
-    REQUIRE( eng.all_offers_.begin()->orders_.size() == 3 );
-    CHECK( eng.all_offers_.begin()->orders_.front().order_id_ == 0 );
-    CHECK( eng.all_offers_.begin()->orders_.back().order_id_ == 0 );
-    REQUIRE_THROWS_AS( eng.cancel_order(0), std::runtime_error );
-    REQUIRE( eng.all_offers_.begin()->orders_.size() == 3 );
-    //aggresive order 
-    eng.add_replay_order( 2, 2, 100, 6, Side::Bid, false, handler );
-    REQUIRE( eng.all_offers_.begin()->orders_.empty() );
-    std::vector<int> temp ; 
-    temp.emplace_back(1);
-    temp.emplace_back(1);
-    temp.emplace_back(1);
-    temp.emplace_back(2);
-    auto it = std::upper_bound( temp.begin(), temp.end(), 1 );
-    REQUIRE(3== std::distance( temp.begin(), it ) );
-    CHECK( 2 == *it );
-}
-TEST_CASE( "record - replay basics", "[ClientState]" ) {
-    using namespace SDB;
-    MatchingEngine eng;
-    ReplayData handler(eng.mem_);
+    RecordingSimulationHandler<OrderBookEventWithClientID> recorder( &eng.mem_, true, true, true , nullptr );
+    simulate_a( msgs, times, prices, Side::Offer, 4, 4, 5, eng, recorder );
 
-    eng.set_time(0);
-    eng.add_simulation_order( 0 , 100, 10, 1, Side::Offer, false , handler );
-    eng.set_time(1);
-    eng.add_simulation_order( 1 , 101, 10, 1, Side::Offer, false , handler );
-    eng.set_time(2);
-    eng.add_simulation_order( 2 , 101,  2, 2, Side::Bid  , false , handler );
+    CHECK( msgs.size() <= recorder.msgs_.size() );
 
-    //average trade price should be 100: 
-    for (const auto & m : handler.msgs_ ) {
-        if (m.mtype_ == NotifyMessageType::Trade and m.cid_ == 2 )
-            CHECK( m.trade_price_ == 100 );
-    }
+    REQUIRE( recorder.trades_.empty() ); //because only 2 traded 
 
-    MatchingEngine eng2;
-    ReplayData handler2(eng2.mem_);
-
-    //std::cerr << "replay" << std::endl;
-    bool fail = false;
-
-    try { 
-        replay( handler.msgs_, eng2, handler2 );
-    } catch (const std::runtime_error & e) { 
-        std::cerr << e.what() << std::endl; 
-        fail = true;
-    }
-
-    //average trade price should be 100: 
-    for (const auto & m : handler2.msgs_ ) {
-        if (m.mtype_ == NotifyMessageType::Trade and m.cid_ == 2 )
-            CHECK( m.trade_price_ == 100 );
-    }
-    CHECK( not fail );
 }
 
-TEST_CASE( "record - replay", "[ClientState]" ) {
+TEST_CASE( "simulate_a - one trade", "[ClientState]" ) {
+    using namespace SDB;
+    
+    std::vector<OrderBookEventWithClientID> msgs ;
+    msgs.emplace_back( OrderBookEvent( 0, 0, 100, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,0 ) ;
+    msgs.emplace_back( OrderBookEvent( 1, 1, 101, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,1 ) ;
+    msgs.emplace_back( OrderBookEvent( 2, 2, 100, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,2 ) ;
+    msgs.emplace_back( OrderBookEvent( 3, 2, 100, 0, 4, 0, NotifyMessageType::Ack, Side::Bid  ) ,3 ) ;
+
+    std::vector<TimeType> times{0,1,2,3} ;
+    std::vector<double> prices{1000,100,100,100} ;
+
+    MatchingEngine eng;
+    RecordingSimulationHandler<OrderBookEventWithClientID> recorder( &eng.mem_, true, true, true, nullptr );
+    simulate_a( msgs, times, prices, Side::Offer, 4, 4, 5, eng, recorder );
+
+    CHECK( msgs.size() <= recorder.msgs_.size() );
+
+    REQUIRE( not recorder.trades_.empty() ); //because 4 has traded 
+
+    CHECK( std::get<0>(recorder.trades_.front()) == 3   );
+    CHECK( std::get<1>(recorder.trades_.front()) == 100 );
+
+}
+
+TEST_CASE( "simulate_a - one trade and refill", "[ClientState]" ) {
+    using namespace SDB;
+    
+    std::vector<OrderBookEventWithClientID> msgs ;
+    msgs.emplace_back( OrderBookEvent( 0, 0, 100, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,0 ) ;
+    msgs.emplace_back( OrderBookEvent( 1, 1, 101, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,1 ) ;
+    msgs.emplace_back( OrderBookEvent( 2, 2, 100, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,2 ) ;
+    msgs.emplace_back( OrderBookEvent( 3, 2, 100, 0, 4, 0, NotifyMessageType::Ack, Side::Bid  ) ,3 ) ;
+
+    std::vector<TimeType> times{0,1,2,3} ;
+    std::vector<double> prices{1000,100,100,100} ;
+
+    MatchingEngine eng;
+    RecordingSimulationHandler<OrderBookEventWithClientID> recorder( &eng.mem_, true, true, true, nullptr );
+    simulate_a( msgs, times, prices, Side::Offer, 4, 4, 5, eng, recorder );
+
+    CHECK( msgs.size() <= recorder.msgs_.size() );
+
+    REQUIRE( not recorder.trades_.empty() ); //because 4 has traded 
+
+    CHECK( std::get<0>(recorder.trades_.front()) == 3   );
+    CHECK( std::get<1>(recorder.trades_.front()) == 100 );
+    CHECK( recorder.simulated_order_status_ == OrderStatus::Acked  );
+
+}
+
+TEST_CASE( "record - simulate_a - no market impact.", "[ClientState]" ) {
+
     using namespace SDB;
 
     int seed = 0; 
@@ -523,55 +535,63 @@ TEST_CASE( "record - replay", "[ClientState]" ) {
 
 
     MatchingEngine eng;
-    ClientState::NotificationHandler<ReplayData> handler(eng);
+    RecordingSimulationHandler<OrderBookEventWithClientID> recorder( &eng.mem_, true, false , false, nullptr );
+    ClientState::NotificationHandler handler(recorder,eng);
     const TimeType TMax = 10 *1e9; 
+    //const TimeType Sec = 1_000_000_000 ; 
 
     simulate( client_types_and_sizes, eng, handler, TMax );
 
-    REQUIRE( not handler.msgs_.empty() );
-    REQUIRE( not handler.snapshots_.empty() );
+    REQUIRE( not recorder.msgs_.empty() );
+    REQUIRE( not recorder.snapshots_.empty() );
+
+    std::vector<TimeType> times;
+    times.reserve( recorder.msgs_.size() );
+    times.emplace_back(recorder.msgs_.front().event_time_) ;
+    OrderIDType oid = 0; 
+    for ( auto it = recorder.msgs_.begin()+1; it != recorder.msgs_.end(); ++it) {
+        oid = std::max( oid, it->oid_ );
+        if (it->event_time_ != times.back())
+            times.emplace_back( it->event_time_ );
+    }
+
+    std::vector<double> prices;
+    prices.reserve( times.size() );
+    auto wm_it = recorder.wm_.begin();
+    for ( const auto & t : times ) { 
+        auto j = std::upper_bound( wm_it, recorder.wm_.end(), t, 
+                []( TimeType time, const std::tuple<TimeType,double> & tpl) { return time < std::get<0>(tpl) ; } );
+        if (j != recorder.wm_.end()) 
+            REQUIRE( std::get<0>(*j) > t );
+        --j; 
+        REQUIRE( std::get<0>(*j) == t );
+        prices.emplace_back( std::get<1>(*j) ); 
+        wm_it = j + 1;
+    }
+
 
     MatchingEngine eng2;
-    ReplayData handler2(eng2.mem_);
+    RecordingSimulationHandler<OrderBookEventWithClientID> recorder2( &eng2.mem_, true, false, true, nullptr );
+    simulate_a( recorder.msgs_, times, prices, Side::Bid, oid+1, 0, 1, eng2, recorder2 );
 
-    replay( handler.msgs_, eng2, handler2 );
-
-    /* for (size_t i = 0; i < std::min(handler.msgs_.size(), handler2.msgs_.size() ) ; ++i ) { 
-        std::cout << i 
-            << "\n\t" << handler.msgs_[i].str() 
-            << "\n\t" << handler2.msgs_[i].str()
-            << std::endl ;
-    }*/
-
-    CHECK( handler.msgs_.size() == handler2.msgs_.size() );
-    CHECK( handler.snapshots_.size() == handler2.snapshots_.size() );
+    CHECK( recorder.msgs_.size() <= recorder2.msgs_.size() );
+    CHECK( recorder.snapshots_.size() == recorder2.snapshots_.size() );
 
     int n_orders_checked = 0; 
-    for (size_t i = 0; i < std::min(handler.snapshots_.size(), handler2.snapshots_.size() ) ; ++i ) { 
-        const auto & [t1, levels1] = handler.snapshots_[i];
-        const auto & [t2, levels2] = handler2.snapshots_[i];
-        /*std::cout << i 
-            << " t1:" << t1 << " t2:" << t2 
-            << " nl1:" << levels1.size() << " nl2:" << levels2.size()
-            << std::endl ;*/
+    for (size_t i = 0; i < std::min(recorder.snapshots_.size(), recorder2.snapshots_.size() ) ; ++i ) { 
+        const auto & [t1, levels1] = recorder.snapshots_[i];
+        const auto & [t2, levels2] = recorder2.snapshots_[i];
         REQUIRE(t1==t2);
         REQUIRE(levels1.size()==levels2.size());
         for (size_t j = 0; j < levels1.size(); ++j) { 
             const auto & [price1,side1,orders1] = levels1.at(j);
             const auto & [price2,side2,orders2] = levels2.at(j);
-            /*std::cout << i << ' ' << j 
-                << " l1:" << price1 << " " <<  std::to_string(side1) << " " << orders1.size() 
-                << " l2:" << price2 << " " <<  std::to_string(side2) << " " << orders2.size() 
-                << std::endl ;*/
             REQUIRE( price1==price2 );
             REQUIRE( side1==side2 );
             REQUIRE(orders1.size()==orders2.size());
             auto it1 = orders1.begin(); 
             auto it2 = orders2.begin(); 
             for ( ; it1 != orders1.end(); ++it1, ++it2 ) { 
-                /*if ( it1->creation_time_ != it2->creation_time_ ) std::cout << "creation times differ below:\n";
-                std::cout << "order1 " <<  it1->order_id_ << " s:" << it1->shown_size_ << " rs:" << it1->remaining_size_ << " ct: " << it1->creation_time_*1e-9 << '\n';
-                std::cout << "order2 " <<  it2->order_id_ << " s:" << it2->shown_size_ << " rs:" << it2->remaining_size_ << " ct: " << it2->creation_time_*1e-9 << '\n';*/
                 REQUIRE( it1->price_ == price1 );
                 REQUIRE( it1->side_ == side1 );
                 REQUIRE( it2->price_ == price2 );
@@ -588,7 +608,242 @@ TEST_CASE( "record - replay", "[ClientState]" ) {
 
     }
     CHECK(n_orders_checked>0);
-    //std::cout << "n_orders_checked " << n_orders_checked << std::endl;
 
 }
+
+namespace SDB { 
+    struct FakeMatchingEngine : public MatchingEngine {
+        double wm_ ; 
+        double wm() const { return wm_ ; }
+        FakeMatchingEngine(double wm0=0) : wm_(wm0) {};
+    };
+};
+
+TEST_CASE( "simple stats 1", "[StatisticsSimulationHandler]" ) {
+    using namespace SDB;
+
+    FakeMatchingEngine eng; 
+    StatisticsSimulationHandler<> handler; 
+
+    boost::random::mt19937 mt;
+    mt.seed(0);
+
+    boost::random::normal_distribution<double> order_price_distribution;
+    boost::random::bernoulli_distribution<double> binary_distribution;
+
+    constexpr TimeType TMax = 100000;
+
+    Order & shadow_order = get_new_order( eng.mem_ , 0, 0, 0, 0, 1, 1, Side::Bid, true, handler );
+    Order & dummy_order = get_new_order( eng.mem_ , 0, 0, 0, 0, 1, 1, Side::Bid, false, handler );
+    for (TimeType t = 0; t < TMax ; ++t) { 
+        eng.set_time( t );
+        eng.wm_ += 1e-1*order_price_distribution( mt );
+        eng.set_time(t);
+        const PriceType bbid = std::trunc( eng.wm_ ) - (eng.wm_<0 ? 1:0);
+        const double r = eng.wm_ - bbid; 
+        REQUIRE( r >= 0 );
+        REQUIRE( r <= 1 );
+        bool passive_trade_shadow = false;
+        const bool aggressive = binary_distribution( 
+                mt,
+                boost::random::bernoulli_distribution<double>::param_type(r) );
+        const PriceType price = bbid + (aggressive ? 1 : 0 ) ; 
+        if (aggressive) 
+            //we will fill the shadow order aggressively
+            handler.log(NotifyMessageType::Trade, shadow_order, t, 1, price );
+        else {
+            passive_trade_shadow = true;
+            if (passive_trade_shadow) 
+                handler.log(NotifyMessageType::Trade, shadow_order, t, 1, price );
+            else 
+                handler.log(NotifyMessageType::Trade, dummy_order, t, 1, price );
+        }
+        handler.log( eng );
+        //std::cout << t << ',' << eng.wm_ << ',' ;
+        //if (aggressive or passive_trade_shadow) std::cout << price ;
+        //std::cout << std::endl ;
+    }
+    CHECK( not std::isnan( handler.sum_return_by_dT_ ) );
+    CHECK( handler.sum_dT_ > 0 );
+    CHECK( std::abs( handler.sum_return_by_dT_ / handler.sum_dT_ ) < 2./std::sqrt(TMax)  );
+}
+
+TEST_CASE( "simple stats 2", "[StatisticsSimulationHandler]" ) {
+    using namespace SDB;
+
+    FakeMatchingEngine eng; 
+    StatisticsSimulationHandler<> handler; 
+
+    boost::random::mt19937 mt;
+    mt.seed(0);
+
+    boost::random::normal_distribution<double> order_price_distribution;
+    boost::random::bernoulli_distribution<double> binary_distribution;
+
+    constexpr TimeType TMax = 100000;
+
+    Order & shadow_order = get_new_order( eng.mem_ , 0, 0, 0, 0, 1, 1, Side::Bid, true, handler );
+    Order & dummy_order = get_new_order( eng.mem_ , 0, 0, 0, 0, 1, 1, Side::Bid, false, handler );
+    for (TimeType t = 0; t < TMax ; ++t) { 
+        eng.set_time( t );
+        eng.wm_ += 1e-1*order_price_distribution( mt );
+        eng.set_time(t);
+        const PriceType bbid = std::trunc( eng.wm_ ) - (eng.wm_<0 ? 1:0);
+        const double r = eng.wm_ - bbid; 
+        REQUIRE( r >= 0 );
+        REQUIRE( r <= 1 );
+        bool passive_trade_shadow = false;
+        const bool aggressive = binary_distribution( 
+                mt,
+                boost::random::bernoulli_distribution<double>::param_type(r) );
+        const PriceType price = bbid + (aggressive ? 1 : 0 ) ; 
+        if (aggressive) 
+            //we will fill the shadow order aggressively
+            handler.log(NotifyMessageType::Trade, shadow_order, t, 1, price );
+        else {
+            passive_trade_shadow = false;
+            if (passive_trade_shadow) 
+                handler.log(NotifyMessageType::Trade, shadow_order, t, 1, price );
+            else 
+                handler.log(NotifyMessageType::Trade, dummy_order, t, 1, price );
+        }
+        handler.log( eng );
+    }
+    CHECK( not std::isnan( handler.sum_return_by_dT_ ) );
+    CHECK( handler.sum_dT_ > 0 );
+    CHECK( handler.sum_return_by_dT_ / handler.sum_dT_ < 0  );
+}
+
+TEST_CASE( "simple stats 3", "[StatisticsSimulationHandler]" ) {
+    using namespace SDB;
+
+    FakeMatchingEngine eng; 
+    StatisticsSimulationHandler<> handler; 
+
+    boost::random::mt19937 mt;
+    mt.seed(0);
+
+    boost::random::normal_distribution<double> order_price_distribution;
+    boost::random::bernoulli_distribution<double> binary_distribution;
+
+    constexpr TimeType TMax = 100000;
+
+    Order & shadow_order = get_new_order( eng.mem_ , 0, 0, 0, 0, 1, 1, Side::Bid, true, handler );
+    Order & dummy_order = get_new_order( eng.mem_ , 0, 0, 0, 0, 1, 1, Side::Bid, false, handler );
+    for (TimeType t = 0; t < TMax ; ++t) { 
+        eng.set_time( t );
+        eng.wm_ += 1e-1*order_price_distribution( mt );
+        eng.set_time(t);
+        const PriceType bbid = std::trunc( eng.wm_ ) - (eng.wm_<0 ? 1:0);
+        const double r = eng.wm_ - bbid; 
+        REQUIRE( r >= 0 );
+        REQUIRE( r <= 1 );
+        bool passive_trade_shadow = false;
+        const bool aggressive = binary_distribution( 
+                mt,
+                boost::random::bernoulli_distribution<double>::param_type(r) );
+        const PriceType price = bbid + (aggressive ? 1 : 0 ) ; 
+        if (aggressive) 
+            //we will fill the shadow order aggressively
+            handler.log(NotifyMessageType::Trade, shadow_order, t, 1, price );
+        else {
+            passive_trade_shadow = binary_distribution( 
+                    mt,
+                    boost::random::bernoulli_distribution<double>::param_type(0.1) );
+            if (passive_trade_shadow) 
+                handler.log(NotifyMessageType::Trade, shadow_order, t, 1, price );
+            else 
+                handler.log(NotifyMessageType::Trade, dummy_order, t, 1, price );
+        }
+        handler.log( eng );
+        //std::cout << t << ',' << eng.wm_ << ',' ;
+        //if (aggressive or passive_trade_shadow) std::cout << price ;
+        //std::cout << std::endl ;
+    }
+    CHECK( not std::isnan( handler.sum_return_by_dT_ ) );
+    CHECK( handler.sum_dT_ > 0 );
+    CHECK( handler.sum_return_by_dT_ / handler.sum_dT_ < 0  );
+}
+
+
+TEST_CASE( "simulate_a single param, run it over and over.", "[StatisticsSimulationHandler]" ) {
+    using namespace SDB;
+
+    //let's generate an engine and generate random market data:
+    std::vector<OrderBookEvent> history; 
+    std::vector<TimeType> times ; 
+    std::vector<double> prices ; 
+    OrderIDType oid = 0; 
+    {
+        int seed = 0; 
+        boost::random::mt19937 mt;
+        mt.seed(seed);
+
+        ClientType type1( "type1",mt, 1./60., 1./(30*60.), 100. , 5. , 0.5 );  
+        ClientType type2( "type2",mt, 1.,     1.,          10.  , 2. , 0.5 );  
+
+
+        std::vector<std::tuple<ClientType, int>> client_types_and_sizes ; 
+        client_types_and_sizes.emplace_back(
+                ClientType( "type1",mt, 1./60., 1./(30*60.), 100. , 5. , 0.5 ), 
+                100 );
+
+        client_types_and_sizes.emplace_back(
+                ClientType( "type2",mt, 1.,     1.,          10.  , 2. , 0.5 ),
+                100 );
+
+
+        MatchingEngine eng;
+        RecordingSimulationHandler<OrderBookEvent> recorder( &eng.mem_, true, false , false, nullptr );
+        ClientState::NotificationHandler handler(recorder,eng);
+        const TimeType TMax = 10 *1e9; 
+        //const TimeType Sec = 1_000_000_000 ; 
+
+        simulate( client_types_and_sizes, eng, handler, TMax );
+
+        REQUIRE( not recorder.msgs_.empty() );
+        REQUIRE( not recorder.snapshots_.empty() );
+
+        times.reserve( recorder.msgs_.size() );
+        times.emplace_back(recorder.msgs_.front().event_time_) ;
+        for ( auto it = recorder.msgs_.begin()+1; it != recorder.msgs_.end(); ++it) {
+            oid = std::max( oid, it->oid_ );
+            if (it->event_time_ != times.back())
+                times.emplace_back( it->event_time_ );
+        }
+
+        auto wm_it = recorder.wm_.begin();
+        for ( const auto & t : times ) { 
+            auto j = std::upper_bound( wm_it, recorder.wm_.end(), t, 
+                    []( TimeType time, const std::tuple<TimeType,double> & tpl) { return time < std::get<0>(tpl) ; } );
+            if (j != recorder.wm_.end()) 
+                REQUIRE( std::get<0>(*j) > t );
+            --j; 
+            REQUIRE( std::get<0>(*j) == t );
+            prices.emplace_back( std::get<1>(*j) ); 
+            wm_it = j + 1;
+        }
+        history.swap( recorder.msgs_ );
+    }
+
+
+    const int half = 20;
+    const double max_adj = 2;
+    
+    for (int i = 0; i < 1+2*half; ++i)  {
+        MatchingEngine eng2;
+        StatisticsSimulationHandler<> stats; 
+        std::vector<double> adjusted_prices(prices);
+        const double delta = (i-half)/double(half)*max_adj;
+        for ( auto & p : adjusted_prices ) p += delta;
+        simulate_a( history, times, adjusted_prices, Side::Bid, oid+1, 0, 1, eng2, stats );
+        std::cout << "4 mean cost [ticks]" << delta << " " << stats.sum_return_by_dT_ / stats.sum_dT_ << std::endl;
+        std::cout << "4 total time [sec]" << stats.sum_dT_*1e-9 << std::endl;
+        CHECK( not std::isnan( stats.sum_return_by_dT_ ) );
+        CHECK( stats.sum_dT_ > 0 );
+        //CHECK( stats.sum_return_by_dT_ / stats.sum_dT_ < 0  );
+    }
+
+}
+
 

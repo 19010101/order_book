@@ -40,8 +40,17 @@ namespace std {
 
 namespace SDB { 
 
+    inline std::ostream & operator<<(std::ostream & out, const NotifyMessageType & mtype ) {
+        out << std::to_string(mtype) ; 
+        return out;
+    }
+    inline std::ostream & operator<<(std::ostream & out, const Side & side ) {
+        out << std::to_string(side) ; 
+        return out;
+    }
+
     using OrderIDType = uint64_t ; 
-    using TimeType = uint64_t ; 
+    using TimeType = int64_t ; 
     using ClientIDType = uint32_t;
     using PriceType = int16_t;
     using SizeType = uint16_t;
@@ -264,11 +273,12 @@ namespace SDB {
             return out;
         }
 
-        auto snapshot() const {
+        auto snapshot(const bool record_shadow_orders) const {
             std::tuple< PriceType, Side, MemoryManager<Order>::list_type > ret;
             std::get<0>(ret) = price_;
             std::get<1>(ret) = side_;
             for (const Order & o : orders_ ) { 
+                if (o.is_shadow_ and not record_shadow_orders) continue;
                 Order & clone = mem_.get_unused() ; 
                 clone.clone(o); 
                 std::get<2>(ret).push_back( clone );
@@ -370,13 +380,19 @@ namespace SDB {
             return out;
         }
 
-        auto snapshot() const { 
+        auto snapshot(const bool record_shadow_orders = true) const { 
             std::vector< std::tuple< PriceType, Side, MemoryManager<Order>::list_type > > ret;
             ret.reserve( all_offers_.size() + all_bids_.size() );
-            for (auto it = all_offers_.rbegin(); it != all_offers_.rend(); ++it)
-                ret.emplace_back( it->snapshot() );
-            for (auto it = all_bids_.begin(); it != all_bids_.end(); ++it)
-                ret.emplace_back( it->snapshot() );
+            for (auto it = all_offers_.rbegin(); it != all_offers_.rend(); ++it) {
+                auto tpl = it->snapshot(record_shadow_orders);
+                if ( not std::get<2>(tpl).empty() )
+                    ret.emplace_back( std::move(tpl) );
+            }
+            for (auto it = all_bids_.begin(); it != all_bids_.end(); ++it) {
+                auto tpl = it->snapshot(record_shadow_orders);
+                if ( not std::get<2>(tpl).empty() )
+                    ret.emplace_back( std::move(tpl) );
+            }
             return std::make_tuple( time_, std::move(ret) );
         }
 
@@ -426,8 +442,14 @@ namespace SDB {
         template <INotifier N> 
             void cancel_order( const OrderIDType oid, N & notify ) { 
                 auto eq_range = ptr_set_.equal_range(oid);
-                if ( 1 != std::distance( eq_range.first, eq_range.second ) )
-                    throw std::runtime_error("cancelling more than one order with oid " +std::to_string(oid)  + " ?" );
+                for (auto it = eq_range.first; it != eq_range.second; ++it)
+                    if ((*it)->order_id_ != oid) 
+                        std::cerr << "OID mismatch " << oid << " " << *it << " " << std::to_string(**it) << std::endl;  
+                if ( 1 != std::distance( eq_range.first, eq_range.second ) ) { 
+                    //for (auto it = eq_range.first; it != eq_range.second; ++it) std::cerr << "OOOPS " << oid << " " << *it << " " << std::to_string(**it) << std::endl;  
+                    throw std::runtime_error("cancelling more than one order with oid " +std::to_string(oid)  + ". Num orders is " +
+                            std::to_string(std::distance( eq_range.first, eq_range.second ) ) + "." );
+                }
                 Order & order = **eq_range.first;
                 Level::SET & levels = get_book( order.side_ );
                 auto levels_iterator = levels.find( order.price_ );

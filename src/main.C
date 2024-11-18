@@ -31,7 +31,8 @@ int main(const int argc,const char ** argv) {
     
 
     MatchingEngine eng;
-    ClientState::NotificationHandler handler(eng);
+    CerrLogger logger;
+    ClientState::NotificationHandler handler(logger,eng);
 
     for (auto & cs : client_states) {
         cs.setup_new_order_placement_data(0.0, 0); //set action time
