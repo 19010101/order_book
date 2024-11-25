@@ -27,8 +27,8 @@ namespace SDB {
 
     template<typename T> 
         bool parse( std::string_view & str,  T & t ) { 
-            auto [ptr, ec] = std::from_chars( str.begin(), str.begin() + str.size() , t ) ;
-            return ec != std::errc() or ptr != str.begin()+str.size() ;
+            auto [ptr, ec] = std::from_chars( str.data(), str.data() + str.size() , t ) ;
+            return ec != std::errc() or ptr != str.data()+str.size() ;
         }
 
     inline void read_csv_file( std::ifstream & in , std::vector<OrderBookEvent> & obes) { 

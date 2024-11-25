@@ -202,6 +202,9 @@ namespace SDB {
             size_t operator()( const OrderIDType a, const Order * b ) const { 
                 return a == b->order_id_;
             }
+            size_t operator()(  const Order * b, const OrderIDType a ) const { 
+                return a == b->order_id_;
+            }
         };
         using PtrSet = std::unordered_multiset< Order*, typename Order::Hash, typename  Order::Eq>;
 
