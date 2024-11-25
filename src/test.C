@@ -1,9 +1,8 @@
 #include "memory_manager.h"
 #include "ob.h"
 #include "sim.h"
+#include "utils.h"
 #include <boost/random/bernoulli_distribution.hpp>
-#include <limits>
-//#include <sstream>
 
 #define CATCH_CONFIG_MAIN
 #include <catch2/catch.hpp>
@@ -845,5 +844,43 @@ TEST_CASE( "simulate_a single param, run it over and over.", "[StatisticsSimulat
     }
 
 }
+TEST_CASE( "empty", "[Utils]" ) {
+    using namespace SDB;
+    std::vector<std::string_view> vec ; 
+    const std::string test1("1,");
+    split_string( test1, vec );
+    REQUIRE( vec.size() == 2 ) ;
+}
+TEST_CASE( "test string split", "[Utils]" ) {
+    using namespace SDB;
+    std::vector<std::string_view> vec ; 
+    const std::string test1("1,23,456,7890");
+    split_string( test1, vec );
+    REQUIRE( vec.size() == 4 ) ;
+    CHECK( "1" == vec[0] );
+    CHECK( "23" == vec[1] );
+    CHECK( "456" == vec[2] );
+    CHECK( "7890" == vec[3] );
+
+    const std::string test2("1,23,,7890");
+    split_string( test2, vec );
+    REQUIRE( vec.size() == 4 ) ;
+    CHECK( "1" == vec[0] );
+    CHECK( "23" == vec[1] );
+    CHECK( "" == vec[2] );
+    CHECK( "7890" == vec[3] );
+
+    const std::string test3("1,23,456,");
+    split_string( test3, vec );
+    REQUIRE( vec.size() == 4 ) ;
+
+    const std::string test4(",,,");
+    split_string( test4, vec );
+    REQUIRE( vec.size() == 4 ) ;
+    for (const auto & view : vec )
+        CHECK( view.size() == 0 );
+}
+
+
 
 
