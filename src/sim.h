@@ -17,6 +17,28 @@ namespace SDB {
 
     constexpr double EPS = 1e-10 ; 
 
+    template<typename T> 
+        bool safe_round( const double & d , T & out ) { 
+            const auto ll = std::llround( d );
+            out = T( ll );
+            return 
+                d  <= std::numeric_limits<decltype(ll)>::max() and 
+                d  >= std::numeric_limits<decltype(ll)>::min() and 
+                ll <= std::numeric_limits<T>::max() and 
+                ll >= std::numeric_limits<T>::min() ;
+        }
+        
+    template<typename T> 
+        T safe_round( const double & d ) { 
+            T t;
+            if ( std::isnan( d ) ) 
+                throw std::runtime_error(std::string("Cannot convert NaN to ") + typeid(T).name() );
+            if ( not safe_round(d,t) ) throw std::runtime_error(
+                    "cannot convert " + std::to_string(d) + " to " + typeid(T).name() );
+            return t;
+        }
+
+
     struct ClientType { 
 
         const std::string tag_ ; 
@@ -56,10 +78,12 @@ namespace SDB {
             return order_price_(mt_);
         }
         TimeType get_placement_dt() const {
-            return TimeType(lround(1e9*placement_(mt_)));
+            //return TimeType(lround(1e9*placement_(mt_)));
+            return safe_round<TimeType>(1e9*placement_(mt_));
         }
         TimeType get_cancellation_dt( ) const {
-            return TimeType(lround(1e9*cancellation_(mt_)));
+            //return TimeType(lround(1e9*cancellation_(mt_)));
+            return safe_round<TimeType>(1e9*cancellation_(mt_));
         }
 
         auto get_next_placement_info() const { 
@@ -137,7 +161,8 @@ namespace SDB {
                 const TimeType now ) { 
             auto [dt, d_price, size, side] = client_type_.get_next_placement_info();
             const double real_price = std::isnan(wm) ? d_price : wm + d_price;
-            price_ = std::lround( real_price );
+            // price_ = std::lround( real_price );
+            price_ = safe_round<PriceType>( real_price );
             show_ = 2;
             side_ = side;
             size_ = size;
@@ -337,41 +362,6 @@ namespace SDB {
         explicit replay_error( const std::string & what) : std::runtime_error(what) {}
     };
 
-    inline std::vector<PriceType> round_prices(  const std::vector<double> & prices  ) { 
-        std::vector<PriceType> ret;
-        ret.reserve(prices.size());
-        for (auto & p : prices) ret.emplace_back( std::lround( p ) );
-        return ret;
-    }
-    inline bool will_trade( const PriceType aggressive_price, const PriceType top_of_book, const Side aggressive_side ) { 
-        if (aggressive_side == Side::Bid) 
-            return aggressive_price >= top_of_book;
-        else 
-            return aggressive_price <= top_of_book;
-    }
-
-    struct SamePriceBoundaries {
-        const PriceType price_ ; 
-        const TimeType begin_, end_; 
-    };
-    inline std::vector<SamePriceBoundaries> collapse( const std::vector<double> & prices ,  const std::vector<TimeType> & times ) { 
-        std::vector<SamePriceBoundaries> ret ; 
-        size_t i = 0; 
-        PriceType prev_price = std::lround( prices[0] );
-        TimeType prev_time = times[0] ; 
-        ++i;
-        for (; i < prices.size(); ++i) { 
-            PriceType price = std::llround( prices[i] );
-            if (price != prev_price) {
-                ret.emplace_back( prev_price, prev_time, times[i] );
-                prev_price = price;
-                prev_time = times[i];
-            }
-        }
-        ret.emplace_back( prev_price, prev_time, std::numeric_limits<TimeType>::max() );
-        return ret;
-    }
-
     struct OrderBookEvent {
         TimeType event_time_; 
         OrderIDType oid_ ; 
@@ -569,7 +559,8 @@ namespace SDB {
                     "times sizes don't work: " + std::to_string(times.size()) + " vs " + std::to_string( msgs.size()) );
 
 
-            PriceType algo_price;
+            //PriceType algo_price;
+            double algo_price = std::numeric_limits<double>::quiet_NaN();
             auto msgs_it = msgs.begin();
             for ( size_t time_index = 0;  time_index < times.size(); ++time_index ) { 
                 if ( times[time_index] != msgs_it->event_time_ )
@@ -612,15 +603,27 @@ namespace SDB {
                             break;
                     } 
                 }
-                PriceType algo_price_t = std::lround( algo_prices[time_index] );
-                if (time_index==0) {
-                    algo_price = algo_price_t;
-                    eng.add_replay_order( oid , cid_shadow, algo_price, 1, side, true, handler );
-                } else if (algo_price_t != algo_price or handler.simulated_order_status_ == OrderStatus::End) {
-                    algo_price = algo_price_t;
-                    if (handler.simulated_order_status_ != OrderStatus::End) eng.cancel_order( oid, handler ); //cancel if not already gone.
-                    ++oid;
-                    eng.add_replay_order( oid , cid_shadow, algo_price, 1, side, true, handler );
+                //PriceType algo_price_t = std::lround( algo_prices[time_index] );
+
+                if ( std::isnan( algo_prices[time_index] ) ) { 
+                    //if we have an order, we need to cancel it. 
+                    if ( not std::isnan( algo_price ) ) { 
+                        algo_price = algo_prices[time_index]; 
+                        eng.cancel_order( oid, handler ); 
+                    }  
+                } else { 
+                    PriceType algo_price_t = safe_round<PriceType>( algo_prices[time_index] );
+                    if (time_index==0) {
+                        eng.add_replay_order( oid , cid_shadow, algo_price_t, 1, side, true, handler );
+                    } else if (
+                            std::fabs( algo_prices[time_index] - algo_price ) > 1e-7 or 
+                            handler.simulated_order_status_ == OrderStatus::End ) {
+                        if (handler.simulated_order_status_ != OrderStatus::End) 
+                            eng.cancel_order( oid, handler ); //cancel if not already gone.
+                        ++oid;
+                        eng.add_replay_order( oid , cid_shadow, algo_price_t, 1, side, true, handler );
+                    }
+                    algo_price = algo_prices[time_index]; 
                 }
             }
 

@@ -564,7 +564,12 @@ TEST_CASE( "record - simulate_a - no market impact.", "[ClientState]" ) {
             REQUIRE( std::get<0>(*j) > t );
         --j; 
         REQUIRE( std::get<0>(*j) == t );
-        prices.emplace_back( std::get<1>(*j) ); 
+        const double price = std::get<1>(*j);
+        if (std::isnan(price)) {
+            REQUIRE( not prices.empty() );
+            prices.emplace_back( prices.back() ); 
+        } else 
+            prices.emplace_back( price );
         wm_it = j + 1;
     }
 
@@ -819,7 +824,12 @@ TEST_CASE( "simulate_a single param, run it over and over.", "[StatisticsSimulat
                 REQUIRE( std::get<0>(*j) > t );
             --j; 
             REQUIRE( std::get<0>(*j) == t );
-            prices.emplace_back( std::get<1>(*j) ); 
+            const double price = std::get<1>(*j);
+            if (std::isnan(price)) {
+                REQUIRE( not prices.empty() );
+                prices.emplace_back( prices.back() ); 
+            } else 
+                prices.emplace_back( price );
             wm_it = j + 1;
         }
         history.swap( recorder.msgs_ );

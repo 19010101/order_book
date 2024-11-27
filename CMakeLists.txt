@@ -6,7 +6,7 @@ set(SOURCE_FILES src/main.C)
 add_compile_options(-Wall -Wextra -Wpedantic -ggdb)
 
 ### find_package(Boost 1.83 REQUIRED COMPONENTS filesystem)
-find_package(Boost 1.83 REQUIRED)
+find_package(Boost REQUIRED)
 find_package(Catch2 REQUIRED)
 
 add_executable(temp ${SOURCE_FILES})
