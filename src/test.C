@@ -5,7 +5,7 @@
 #include <boost/random/bernoulli_distribution.hpp>
 
 #define CATCH_CONFIG_MAIN
-#include <catch2/catch.hpp>
+#include <catch2/catch_all.hpp>
 
 TEST_CASE( "test ordering", "[Level]" ) {
     using namespace SDB;
@@ -867,18 +867,18 @@ TEST_CASE( "test string split", "[Utils]" ) {
     const std::string test1("1,23,456,7890");
     split_string( test1, vec );
     REQUIRE( vec.size() == 4 ) ;
-    CHECK( "1" == vec[0] );
-    CHECK( "23" == vec[1] );
-    CHECK( "456" == vec[2] );
-    CHECK( "7890" == vec[3] );
+    CHECK( "1" == std::string(vec[0]) );
+    CHECK( "23" == std::string(vec[1]) );
+    CHECK( "456" == std::string(vec[2]) );
+    CHECK( "7890" == std::string(vec[3]) );
 
     const std::string test2("1,23,,7890");
     split_string( test2, vec );
     REQUIRE( vec.size() == 4 ) ;
-    CHECK( "1" == vec[0] );
-    CHECK( "23" == vec[1] );
-    CHECK( "" == vec[2] );
-    CHECK( "7890" == vec[3] );
+    CHECK( "1" == std::string(vec[0]) );
+    CHECK( "23" == std::string(vec[1]) );
+    CHECK( "" == std::string(vec[2]) );
+    CHECK( "7890" == std::string(vec[3]) );
 
     const std::string test3("1,23,456,");
     split_string( test3, vec );
@@ -889,6 +889,7 @@ TEST_CASE( "test string split", "[Utils]" ) {
     REQUIRE( vec.size() == 4 ) ;
     for (const auto & view : vec )
         CHECK( view.size() == 0 );
+        
 }
 
 

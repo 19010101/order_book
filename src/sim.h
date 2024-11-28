@@ -7,7 +7,10 @@
 #include <boost/random/bernoulli_distribution.hpp> 
 #include <boost/random/mersenne_twister.hpp> 
 
+#pragma GCC diagnostic push 
+#pragma GCC diagnostic ignored "-Wunused-parameter" 
 #include <boost/heap/fibonacci_heap.hpp>
+#pragma GCC diagnostic pop 
 
 #include <cmath>
 #include <limits>
@@ -106,11 +109,11 @@ namespace SDB {
                 ) { 
             static char msg[1024];
             if (msg_type == NotifyMessageType::Ack) 
-                std::snprintf(msg, 1024, "%fs:N:%lu:%d:%d:%d:%d", notif_time*1e-9, order.order_id_, order.price_, order.shown_size_ , traded_size, traded_price);
+                std::snprintf(msg, 1024, "%fs:N:%llu:%d:%d:%d:%d", notif_time*1e-9, order.order_id_, order.price_, order.shown_size_ , traded_size, traded_price);
             else if (msg_type == NotifyMessageType::End) 
-                std::snprintf(msg, 1024, "%fs:D:%lu:%d:%d:%d:%d", notif_time*1e-9, order.order_id_, order.price_, order.shown_size_ , traded_size, traded_price);
+                std::snprintf(msg, 1024, "%fs:D:%llu:%d:%d:%d:%d", notif_time*1e-9, order.order_id_, order.price_, order.shown_size_ , traded_size, traded_price);
             else if (msg_type == NotifyMessageType::Trade) 
-                std::snprintf(msg, 1024, "%fs:T:%lu:%d:%d:%d:%d", notif_time*1e-9, order.order_id_, order.price_, order.shown_size_ , traded_size, traded_price);
+                std::snprintf(msg, 1024, "%fs:T:%llu:%d:%d:%d:%d", notif_time*1e-9, order.order_id_, order.price_, order.shown_size_ , traded_size, traded_price);
             else
                 throw std::runtime_error("What is this type? " + std::to_string(int(msg_type)) );
             return msg;
