@@ -45,18 +45,18 @@ TEST_CASE( "test prices agree", "[Level]" ) {
     MemoryManager<Order> mem; 
     Level bids( 100, Side::Bid, mem );
     Order & o = mem.get_unused();
-    o.reset( 0, 0, 0, 100, 5, 1, Side::Offer, false , NOOPNotify::instance()) ;
+    o.reset( 0, 0, 100, 5, 1, Side::Offer, false , NOOPNotify::instance()) ;
     CHECK( bids.do_prices_agree( o ) );
-    o.reset( 0, 0, 0,  99, 5, 1, Side::Offer , false, NOOPNotify::instance());
+    o.reset( 0, 0,  99, 5, 1, Side::Offer , false, NOOPNotify::instance());
     CHECK( bids.do_prices_agree(  o ) );
-    o.reset( 0, 0, 0,  101, 5, 1, Side::Offer, false, NOOPNotify::instance() );
+    o.reset( 0, 0,  101, 5, 1, Side::Offer, false, NOOPNotify::instance() );
     CHECK( not bids.do_prices_agree( o ) );
     Level offers( 100, Side::Offer , mem);
-    o.reset( 0, 0, 0, 100, 5, 1, Side::Bid, false, NOOPNotify::instance() );
+    o.reset( 0, 0, 100, 5, 1, Side::Bid, false, NOOPNotify::instance() );
     CHECK( offers.do_prices_agree( o ) );
-    o.reset( 0, 0, 0,  99, 5, 1, Side::Bid, false, NOOPNotify::instance() );
+    o.reset( 0, 0,  99, 5, 1, Side::Bid, false, NOOPNotify::instance() );
     CHECK( not offers.do_prices_agree( o ) );
-    o.reset( 0, 0, 0,  101, 5, 1, Side::Bid, false, NOOPNotify::instance() );
+    o.reset( 0, 0,  101, 5, 1, Side::Bid, false, NOOPNotify::instance() );
     CHECK( offers.do_prices_agree( o ) );
 }
 
@@ -65,20 +65,25 @@ TEST_CASE( "match orderbook full", "[Level]" ) {
     { //full match 
         MemoryManager<Order> mem; 
         Order::PtrSet set;   
-        OrderIDType oid = 0;
+        OrderIDType oid ;
+        oid.fill(0);
         Level bids( 100, Side::Bid, mem ) ; 
         Level offers( 101, Side::Offer, mem ) ; 
         for (TimeType t = 0 ; t < 10; ++t) { 
-            bids.add_order( get_new_order(mem,oid++, t, 0, 100,  t+1, t+1, Side::Bid , false), set );
-            offers.add_order( get_new_order(mem,oid++, t, 0, 101,  t+1, t+1, Side::Offer, false ), set );
+            bids.add_order( get_new_order(mem,oid, t, 0, 100,  t+1, t+1, Side::Bid , false), set );
+            increment(oid);
+            offers.add_order( get_new_order(mem,oid, t, 0, 101,  t+1, t+1, Side::Offer, false ), set );
+            increment(oid);
         }
 
-        Order & new_offer = get_new_order(mem,oid++, 100, 0, 100, 55 ,55,  Side::Offer, false );
+        Order & new_offer = get_new_order(mem,oid, 100, 0, 100, 55 ,55,  Side::Offer, false );
+        increment(oid);
         bids.match(new_offer, set, 0 );
         CHECK( 0 == new_offer.remaining_size_ );
         CHECK( bids.orders_.empty() );
 
-        Order & new_bid = get_new_order(mem,oid++, 100, 0, 101, 55 ,55,  Side::Bid, false );
+        Order & new_bid = get_new_order(mem,oid, 100, 0, 101, 55 ,55,  Side::Bid, false );
+        increment(oid);
         offers.match(new_bid, set, 0);
         CHECK( 0 == new_bid.remaining_size_ );
         CHECK( offers.orders_.empty() );
@@ -87,20 +92,25 @@ TEST_CASE( "match orderbook full", "[Level]" ) {
     { //full match 
         MemoryManager<Order> mem; 
         Order::PtrSet set;   
-        OrderIDType oid = 0;
+        OrderIDType oid ;
+        oid.fill(0);
         Level bids( 100, Side::Bid,mem ) ; 
         Level offers( 101, Side::Offer,mem ) ; 
         for (TimeType t = 0 ; t < 10; ++t) { 
-            bids.add_order( get_new_order(mem,oid++, t, 0, 100,  t+1, t+1, Side::Bid, false ), set );
-            offers.add_order( get_new_order(mem,oid++, t, 0, 101,  t+1, t+1, Side::Offer, false ), set );
+            bids.add_order( get_new_order(mem,oid, t, 0, 100,  t+1, t+1, Side::Bid, false ), set );
+            increment(oid);
+            offers.add_order( get_new_order(mem,oid, t, 0, 101,  t+1, t+1, Side::Offer, false ), set );
+            increment(oid);
         }
 
-        Order & new_offer = get_new_order(mem,oid++, 100, 0, 99, 55 ,55,  Side::Offer, false );
+        Order & new_offer = get_new_order(mem,oid, 100, 0, 99, 55 ,55,  Side::Offer, false );
+        increment(oid);
         bids.match(new_offer, set, 0);
         CHECK( 0 == new_offer.remaining_size_ );
         CHECK( bids.orders_.empty() );
 
-        Order & new_bid = get_new_order(mem,oid++, 100, 0, 101, 55 ,55,  Side::Bid, false );
+        Order & new_bid = get_new_order(mem,oid, 100, 0, 101, 55 ,55,  Side::Bid, false );
+        increment(oid);
         offers.match(new_bid, set, 0);
         CHECK( 0 == new_bid.remaining_size_ );
         CHECK( offers.orders_.empty() );
@@ -108,20 +118,25 @@ TEST_CASE( "match orderbook full", "[Level]" ) {
     { //no match 
         MemoryManager<Order> mem; 
         Order::PtrSet set;   
-        OrderIDType oid = 0;
+        OrderIDType oid ;
+        oid.fill(0);
         Level bids( 100, Side::Bid,mem ) ; 
         Level offers( 101, Side::Offer,mem ) ; 
         for (TimeType t = 0 ; t < 10; ++t) { 
-            bids.add_order( get_new_order(mem,oid++, t, 0, 100,  t+1, t+1, Side::Bid, false ), set );
-            offers.add_order( get_new_order(mem,oid++, t, 0, 101,  t+1, t+1, Side::Offer, false ), set );
+            bids.add_order( get_new_order(mem,oid, t, 0, 100,  t+1, t+1, Side::Bid, false ), set );
+            increment(oid);
+            offers.add_order( get_new_order(mem,oid, t, 0, 101,  t+1, t+1, Side::Offer, false ), set );
+            increment(oid);
         }
 
-        Order & new_offer = get_new_order(mem,oid++, 100, 0, 101, 55 ,55,  Side::Offer, false );
+        Order & new_offer = get_new_order(mem,oid, 100, 0, 101, 55 ,55,  Side::Offer, false );
+        increment(oid);
         bids.match(new_offer, set, 0);
         CHECK( 55 == new_offer.remaining_size_ );
         CHECK( 10 == bids.orders_.size() );
 
-        Order & new_bid = get_new_order(mem,oid++, 100, 0, 100, 55 ,55,  Side::Bid, false );
+        Order & new_bid = get_new_order(mem,oid, 100, 0, 100, 55 ,55,  Side::Bid, false );
+        increment(oid);
         offers.match(new_bid, set, 0);
         CHECK( 55 == new_bid.remaining_size_ );
         CHECK( 10 == offers.orders_.size() );
@@ -132,36 +147,44 @@ TEST_CASE( "match orderbook hidden", "[Level]" ) {
     using namespace SDB;
     MemoryManager<Order> mem; 
     Order::PtrSet set;   
+    OrderIDType oid;
+    oid.fill(0);
     Level bids( 100, Side::Bid , mem) ; 
     for (TimeType t = 0 ; t < 10; ++t) { 
-        bids.add_order( get_new_order(mem,t, t, 0, 100,  10, 2, Side::Bid, false ), set );
+        bids.add_order( get_new_order(mem,oid, t, 0, 100,  10, 2, Side::Bid, false ), set );
+        increment(oid);
     }
     CHECK( 10 == bids.orders_.front().remaining_size_ );
     CHECK( 2 == bids.orders_.front().shown_size_ );
+    OrderIDType noid ;
+    noid.fill(0);
+    noid[0] = std::numeric_limits<OrderIDType::value_type>::max();
     //trade 1
-    Order & new_offer = get_new_order(mem,100, 100, 0, 100, 1 ,1,  Side::Offer, false );
+    Order & new_offer = get_new_order(mem, noid, 100, 0, 100, 1 ,1,  Side::Offer, false );
     bids.match(new_offer, set, 0);
     CHECK( 0 == new_offer.remaining_size_ );
     REQUIRE( 10 == bids.orders_.size() );
-    CHECK( 0 == bids.orders_.front().order_id_ );
+    CHECK( 0 == bids.orders_.front().order_id_[0] );
     CHECK( 9 == bids.orders_.front().remaining_size_ );
     CHECK( 1 == bids.orders_.front().shown_size_ );
     //trade another 1
-    Order & new_offer2 = get_new_order(mem,100, 100, 0, 100, 1 ,1,  Side::Offer, false );
+    Order & new_offer2 = get_new_order(mem,noid, 100, 0, 100, 1 ,1,  Side::Offer, false );
     bids.match(new_offer2, set, 0);
     CHECK( 0 == new_offer2.remaining_size_ );
     REQUIRE( 10 == bids.orders_.size() );
-    CHECK( 0 == bids.orders_.back().order_id_ );
+    CHECK( 0 == bids.orders_.back().order_id_[0] );
     CHECK( 8 == bids.orders_.back().remaining_size_ );
     CHECK( 2 == bids.orders_.back().shown_size_ );
-    Order & new_offer3 = get_new_order(mem,100, 100, 0, 100, 4 ,2,  Side::Offer, false );
+    Order & new_offer3 = get_new_order(mem,noid, 100, 0, 100, 4 ,2,  Side::Offer, false );
     bids.match(new_offer3, set, 0);
     CHECK( 0 == new_offer3.remaining_size_ );
     REQUIRE( 10 == bids.orders_.size() );
-    OrderIDType i = 3; 
+    OrderIDType i;
+    i.fill(0);
+    i[0] = 3; 
     for (const auto & o : bids.orders_ ) {
         CHECK( i == o.order_id_ );
-        i = (i+1) % 10;
+        i[0] = (i[0]+1) % 10;
     }
 }
 
@@ -309,11 +332,12 @@ TEST_CASE( "cancel order", "[MatchingEngine]" ) {
     using namespace SDB;
     MatchingEngine eng;
     eng.add_simulation_order( 0, 100,  10, 2, Side::Bid, false, NOOPNotify::instance() );
-    CHECK_THROWS_AS( eng.cancel_order( eng.next_order_id_ ), 
-            std::runtime_error) ;
+    CHECK_THROWS_AS( eng.cancel_order( eng.next_order_id_ ), std::runtime_error) ;
     REQUIRE( not eng.all_bids_.empty() );
     CHECK( not eng.all_bids_.begin()->orders_.empty() );
-    eng.cancel_order( 0 );//second order is deleted
+    OrderIDType oid;
+    oid.fill(0);
+    eng.cancel_order( oid );//first order is deleted
     REQUIRE( eng.all_bids_.empty() );
 }
 
@@ -441,10 +465,15 @@ TEST_CASE( "simulate_a - no trades", "[ClientState]" ) {
     using namespace SDB;
     
     std::vector<OrderBookEventWithClientID> msgs ;
-    msgs.emplace_back( OrderBookEvent( 0, 0, 100, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,0 ) ;
-    msgs.emplace_back( OrderBookEvent( 1, 1, 101, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,1 ) ;
-    msgs.emplace_back( OrderBookEvent( 2, 2, 100, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,2 ) ;
-    msgs.emplace_back( OrderBookEvent( 3, 2, 100, 0, 2, 0, NotifyMessageType::Ack, Side::Bid  ) ,3 ) ;
+    OrderIDType oid; 
+    oid.fill(0);
+    msgs.emplace_back( OrderBookEvent( 0, oid, 100, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,0 ) ;
+    increment(oid);
+    msgs.emplace_back( OrderBookEvent( 1, oid, 101, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,1 ) ;
+    increment(oid);
+    msgs.emplace_back( OrderBookEvent( 2, oid, 100, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,2 ) ;
+    msgs.emplace_back( OrderBookEvent( 3, oid, 100, 0, 2, 0, NotifyMessageType::Ack, Side::Bid  ) ,3 ) ;
+    increment(oid);
 
     std::vector<TimeType> times{0,1,2,3} ;
     std::vector<double> prices{1000,100,100,100} ;
@@ -452,7 +481,7 @@ TEST_CASE( "simulate_a - no trades", "[ClientState]" ) {
 
     MatchingEngine eng;
     RecordingSimulationHandler<OrderBookEventWithClientID> recorder( &eng.mem_, true, true, true , nullptr );
-    simulate_a( msgs, times, prices, Side::Offer, 4, 4, 5, eng, recorder );
+    simulate_a( msgs, times, prices, Side::Offer, oid, 4, 5, eng, recorder );
 
     CHECK( msgs.size() <= recorder.msgs_.size() );
 
@@ -464,17 +493,22 @@ TEST_CASE( "simulate_a - one trade", "[ClientState]" ) {
     using namespace SDB;
     
     std::vector<OrderBookEventWithClientID> msgs ;
-    msgs.emplace_back( OrderBookEvent( 0, 0, 100, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,0 ) ;
-    msgs.emplace_back( OrderBookEvent( 1, 1, 101, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,1 ) ;
-    msgs.emplace_back( OrderBookEvent( 2, 2, 100, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,2 ) ;
-    msgs.emplace_back( OrderBookEvent( 3, 2, 100, 0, 4, 0, NotifyMessageType::Ack, Side::Bid  ) ,3 ) ;
+    OrderIDType oid; 
+    oid.fill(0);
+    msgs.emplace_back( OrderBookEvent( 0, oid, 100, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,0 ) ;
+    increment(oid);
+    msgs.emplace_back( OrderBookEvent( 1, oid, 101, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,1 ) ;
+    increment(oid);
+    msgs.emplace_back( OrderBookEvent( 2, oid, 100, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,2 ) ;
+    msgs.emplace_back( OrderBookEvent( 3, oid, 100, 0, 4, 0, NotifyMessageType::Ack, Side::Bid  ) ,3 ) ;
+    increment(oid);
 
     std::vector<TimeType> times{0,1,2,3} ;
     std::vector<double> prices{1000,100,100,100} ;
 
     MatchingEngine eng;
     RecordingSimulationHandler<OrderBookEventWithClientID> recorder( &eng.mem_, true, true, true, nullptr );
-    simulate_a( msgs, times, prices, Side::Offer, 4, 4, 5, eng, recorder );
+    simulate_a( msgs, times, prices, Side::Offer, oid, 4, 5, eng, recorder );
 
     CHECK( msgs.size() <= recorder.msgs_.size() );
 
@@ -489,17 +523,22 @@ TEST_CASE( "simulate_a - one trade and refill", "[ClientState]" ) {
     using namespace SDB;
     
     std::vector<OrderBookEventWithClientID> msgs ;
-    msgs.emplace_back( OrderBookEvent( 0, 0, 100, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,0 ) ;
-    msgs.emplace_back( OrderBookEvent( 1, 1, 101, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,1 ) ;
-    msgs.emplace_back( OrderBookEvent( 2, 2, 100, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,2 ) ;
-    msgs.emplace_back( OrderBookEvent( 3, 2, 100, 0, 4, 0, NotifyMessageType::Ack, Side::Bid  ) ,3 ) ;
+    OrderIDType oid; 
+    oid.fill(0);
+    msgs.emplace_back( OrderBookEvent( 0, oid, 100, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,0 ) ;
+    increment(oid);
+    msgs.emplace_back( OrderBookEvent( 1, oid, 101, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,1 ) ;
+    increment(oid);
+    msgs.emplace_back( OrderBookEvent( 2, oid, 100, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,2 ) ;
+    msgs.emplace_back( OrderBookEvent( 3, oid, 100, 0, 4, 0, NotifyMessageType::Ack, Side::Bid  ) ,3 ) ;
+    increment(oid);
 
     std::vector<TimeType> times{0,1,2,3} ;
     std::vector<double> prices{1000,100,100,100} ;
 
     MatchingEngine eng;
     RecordingSimulationHandler<OrderBookEventWithClientID> recorder( &eng.mem_, true, true, true, nullptr );
-    simulate_a( msgs, times, prices, Side::Offer, 4, 4, 5, eng, recorder );
+    simulate_a( msgs, times, prices, Side::Offer, oid, 4, 5, eng, recorder );
 
     CHECK( msgs.size() <= recorder.msgs_.size() );
 
@@ -547,9 +586,10 @@ TEST_CASE( "record - simulate_a - no market impact.", "[ClientState]" ) {
     std::vector<TimeType> times;
     times.reserve( recorder.msgs_.size() );
     times.emplace_back(recorder.msgs_.front().event_time_) ;
-    OrderIDType oid = 0; 
+    OrderIDType oid ; 
+    oid.fill(0);
     for ( auto it = recorder.msgs_.begin()+1; it != recorder.msgs_.end(); ++it) {
-        oid = std::max( oid, it->oid_ );
+        oid = std::max( oid, it->oid_ ); //TODO max doesn't make sense here.
         if (it->event_time_ != times.back())
             times.emplace_back( it->event_time_ );
     }
@@ -576,7 +616,8 @@ TEST_CASE( "record - simulate_a - no market impact.", "[ClientState]" ) {
 
     MatchingEngine eng2;
     RecordingSimulationHandler<OrderBookEventWithClientID> recorder2( &eng2.mem_, true, false, true, nullptr );
-    simulate_a( recorder.msgs_, times, prices, Side::Bid, oid+1, 0, 1, eng2, recorder2 );
+    increment(oid);
+    simulate_a( recorder.msgs_, times, prices, Side::Bid, oid, 0, 1, eng2, recorder2 );
 
     CHECK( recorder.msgs_.size() <= recorder2.msgs_.size() );
     CHECK( recorder.snapshots_.size() == recorder2.snapshots_.size() );
@@ -636,9 +677,10 @@ TEST_CASE( "simple stats 1", "[StatisticsSimulationHandler]" ) {
     boost::random::bernoulli_distribution<double> binary_distribution;
 
     constexpr TimeType TMax = 100000;
-
-    Order & shadow_order = get_new_order( eng.mem_ , 0, 0, 0, 0, 1, 1, Side::Bid, true, handler );
-    Order & dummy_order = get_new_order( eng.mem_ , 0, 0, 0, 0, 1, 1, Side::Bid, false, handler );
+    OrderIDType oid; 
+    oid.fill(0);
+    Order & shadow_order = get_new_order( eng.mem_ , oid, 0, 0, 0, 1, 1, Side::Bid, true, handler );
+    Order & dummy_order = get_new_order( eng.mem_ , oid, 0, 0, 0, 1, 1, Side::Bid, false, handler );
     for (TimeType t = 0; t < TMax ; ++t) { 
         eng.set_time( t );
         eng.wm_ += 1e-1*order_price_distribution( mt );
@@ -685,9 +727,10 @@ TEST_CASE( "simple stats 2", "[StatisticsSimulationHandler]" ) {
     boost::random::bernoulli_distribution<double> binary_distribution;
 
     constexpr TimeType TMax = 100000;
-
-    Order & shadow_order = get_new_order( eng.mem_ , 0, 0, 0, 0, 1, 1, Side::Bid, true, handler );
-    Order & dummy_order = get_new_order( eng.mem_ , 0, 0, 0, 0, 1, 1, Side::Bid, false, handler );
+    OrderIDType oid;
+    oid.fill(0);
+    Order & shadow_order = get_new_order( eng.mem_ , oid, 0, 0, 0, 1, 1, Side::Bid, true, handler );
+    Order & dummy_order = get_new_order( eng.mem_ , oid, 0, 0, 0, 1, 1, Side::Bid, false, handler );
     for (TimeType t = 0; t < TMax ; ++t) { 
         eng.set_time( t );
         eng.wm_ += 1e-1*order_price_distribution( mt );
@@ -732,8 +775,10 @@ TEST_CASE( "simple stats 3", "[StatisticsSimulationHandler]" ) {
 
     constexpr TimeType TMax = 100000;
 
-    Order & shadow_order = get_new_order( eng.mem_ , 0, 0, 0, 0, 1, 1, Side::Bid, true, handler );
-    Order & dummy_order = get_new_order( eng.mem_ , 0, 0, 0, 0, 1, 1, Side::Bid, false, handler );
+    OrderIDType oid;
+    oid.fill(0);
+    Order & shadow_order = get_new_order( eng.mem_ , oid, 0, 0, 0, 1, 1, Side::Bid, true, handler );
+    Order & dummy_order = get_new_order( eng.mem_ , oid, 0, 0, 0, 1, 1, Side::Bid, false, handler );
     for (TimeType t = 0; t < TMax ; ++t) { 
         eng.set_time( t );
         eng.wm_ += 1e-1*order_price_distribution( mt );
@@ -777,7 +822,8 @@ TEST_CASE( "simulate_a single param, run it over and over.", "[StatisticsSimulat
     std::vector<OrderBookEvent> history; 
     std::vector<TimeType> times ; 
     std::vector<double> prices ; 
-    OrderIDType oid = 0; 
+    OrderIDType oid ; 
+    oid.fill(0);
     {
         int seed = 0; 
         boost::random::mt19937 mt;
@@ -845,7 +891,8 @@ TEST_CASE( "simulate_a single param, run it over and over.", "[StatisticsSimulat
         std::vector<double> adjusted_prices(prices);
         const double delta = (i-half)/double(half)*max_adj;
         for ( auto & p : adjusted_prices ) p += delta;
-        simulate_a( history, times, adjusted_prices, Side::Bid, oid+1, 0, 1, eng2, stats );
+        increment(oid);
+        simulate_a( history, times, adjusted_prices, Side::Bid, oid, 0, 1, eng2, stats );
         std::cout << "4 mean cost [ticks]" << delta << " " << stats.sum_return_by_dT_ / stats.sum_dT_ << std::endl;
         std::cout << "4 total time [sec]" << stats.sum_dT_*1e-9 << std::endl;
         CHECK( not std::isnan( stats.sum_return_by_dT_ ) );
@@ -890,6 +937,29 @@ TEST_CASE( "test string split", "[Utils]" ) {
     for (const auto & view : vec )
         CHECK( view.size() == 0 );
         
+}
+
+TEST_CASE( "increment", "[OrderIDType]" ) {
+    using namespace SDB;
+    OrderIDType oid;
+    oid.fill(0);
+    increment(oid);
+    CHECK(oid[0] == 1);
+    for (size_t i = 1; i < oid.size();++i)
+        CHECK(oid[i] == 0);
+
+    increment(oid);
+    CHECK(oid[0] == 2);
+    for (size_t i = 1; i < oid.size();++i)
+        CHECK(oid[i] == 0);
+
+    oid[0] = std::numeric_limits<OrderIDType::value_type>::max();
+    increment(oid);
+    CHECK(oid[0] == 0);
+    CHECK(oid[1] == 1);
+    for (size_t i = 2; i < oid.size();++i)
+        CHECK(oid[i] == 0);
+
 }
 
 

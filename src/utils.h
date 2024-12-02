@@ -30,6 +30,33 @@ namespace SDB {
             auto [ptr, ec] = std::from_chars( str.data(), str.data() + str.size() , t ) ;
             return ec != std::errc() or ptr != str.data()+str.size() ;
         }
+    template<size_t N> 
+        bool parse( std::string_view & str,  std::array<uint8_t,N> & t ) { 
+            auto c = str.begin();
+            auto u = t.begin();
+            while (c != str.end() and u != t.end() ) {
+                switch (*c) {
+                    case '<' : 
+                    {
+                        ++c;
+                        const auto end = c+2 ;
+                        if (end >= str.end() or *end != '>' ) return false;
+                        auto [ptr, ec] = std::from_chars( c, end , *u, 16 ) ;
+                        if ( ec != std::errc() or ptr != end ) return false;
+                        c += 3;
+                        ++u ; 
+                        break;
+                    } 
+                    default : 
+                    {
+                        *u = *c;
+                        ++c; 
+                        ++u;
+                    }
+                }
+            }
+            return true;
+        }
 
     inline void read_csv_file( std::ifstream & in , std::vector<OrderBookEvent> & obes) { 
         obes.clear();
@@ -39,7 +66,7 @@ namespace SDB {
         constexpr std::string_view CANCEL("CANCEL");
         constexpr std::string_view AMMEND("AMMEND");
         constexpr std::string_view Ask("Ask");
-        std::unordered_map<OrderIDType, std::string> active_orders;
+        std::unordered_map<OrderIDType, std::string, boost::hash<OrderIDType>> active_orders;
         while ( std::getline( in, line ) ) { 
             split_string(line, words );
             if (words.size()!=5)

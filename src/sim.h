@@ -102,19 +102,20 @@ namespace SDB {
     struct CerrLogger { 
         const char * to_string( 
                 const NotifyMessageType msg_type, 
-                const Order & order, 
-                const TimeType notif_time ,
-                const SizeType traded_size, 
-                const SizeType traded_price
+                const Order & , 
+                const TimeType ,
+                const SizeType , 
+                const SizeType 
                 ) { 
             static char msg[1024];
+                /*
             if (msg_type == NotifyMessageType::Ack) 
                 std::snprintf(msg, 1024, "%fs:N:%llu:%d:%d:%d:%d", notif_time*1e-9, order.order_id_, order.price_, order.shown_size_ , traded_size, traded_price);
             else if (msg_type == NotifyMessageType::End) 
                 std::snprintf(msg, 1024, "%fs:D:%llu:%d:%d:%d:%d", notif_time*1e-9, order.order_id_, order.price_, order.shown_size_ , traded_size, traded_price);
             else if (msg_type == NotifyMessageType::Trade) 
                 std::snprintf(msg, 1024, "%fs:T:%llu:%d:%d:%d:%d", notif_time*1e-9, order.order_id_, order.price_, order.shown_size_ , traded_size, traded_price);
-            else
+            else */
                 throw std::runtime_error("What is this type? " + std::to_string(int(msg_type)) );
             return msg;
         }
@@ -212,7 +213,7 @@ namespace SDB {
                     return this->operator()(p.active_order_id());
                 }
                 size_t operator()( const OrderIDType & oid) const {
-                    return std::hash<OrderIDType>()(oid);
+                    return boost::hash<OrderIDType>()(oid);
                 }
             };
             struct EqOID {
@@ -623,7 +624,7 @@ namespace SDB {
                             handler.simulated_order_status_ == OrderStatus::End ) {
                         if (handler.simulated_order_status_ != OrderStatus::End) 
                             eng.cancel_order( oid, handler ); //cancel if not already gone.
-                        ++oid;
+                        increment(oid);
                         eng.add_replay_order( oid , cid_shadow, algo_price_t, 1, side, true, handler );
                     }
                     algo_price = algo_prices[time_index]; 

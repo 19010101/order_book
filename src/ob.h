@@ -6,6 +6,7 @@
 #include <unordered_set>
 #include <limits>
 #include <sstream>
+#include <boost/container_hash/hash.hpp>
 
 #include "memory_manager.h"
 
@@ -49,13 +50,28 @@ namespace SDB {
         return out;
     }
 
-    using OrderIDType = uint64_t ; 
+    using OrderIDType = std::array<uint8_t, 12>  ; 
     using TimeType = int64_t ; 
     using ClientIDType = uint32_t;
     using PriceType = int16_t;
     using SizeType = uint16_t;
 
-
+} 
+namespace std {
+    template <size_t N>
+    std::ostream & operator<<(std::ostream & out, const std::array<uint8_t, N> & oid ) {
+        out << "0x" ; 
+        for (const auto i : oid) 
+            out <<  std::format( "{:x}", i );
+        return out;
+    }
+    inline std::string to_string( const OrderIDType & oid) { 
+        std::ostringstream out ;
+        out << oid;
+        return out.str();
+    }
+}
+namespace SDB{ 
     inline Side get_other_side( Side s ) {
         switch (s) {
             case Side::Bid : return Side::Offer ; 
@@ -63,6 +79,21 @@ namespace SDB {
         }
         throw std::runtime_error("Come on");
     }
+
+    template <typename T, size_t N>
+        inline void increment( std::array<T, N> & oid ) { 
+            auto it = oid.begin();
+            while (it != oid.end()) {
+                if (*it < std::numeric_limits<T>::max() ) {
+                    ++*it;
+                    if (it != oid.begin() ) 
+                        *(it-1) = 0;
+                    return;
+                } else
+                    ++it;
+            }
+            throw std::runtime_error("maximum reached in increment: " + std::to_string(oid) );
+        }
 
     struct Order;
     struct MatchingEngine ;
@@ -100,7 +131,23 @@ namespace SDB {
 
 
         template <INotifier N>
-            void reset( OrderIDType oid, TimeType t, ClientIDType cid, PriceType p, SizeType s, SizeType show, Side side, bool is_shadow, N & notify ) 
+            void reset( TimeType t, ClientIDType cid, PriceType p, SizeType s, SizeType show, Side side, bool is_shadow, N & notify ) 
+            {
+                order_id_.fill( std::numeric_limits<uint8_t>::max() ) ;
+                creation_time_ = t ;
+                client_id_ = cid;
+                price_ = p;
+                total_size_ = s ;
+                show_ = show;
+                remaining_size_ = s;
+                shown_size_ = 0;
+                side_ = side;
+                is_shadow_ = is_shadow;
+                is_hidden_ = false;
+                replenish(notify, t);
+            }
+        template <INotifier N>
+            void reset( const OrderIDType & oid, TimeType t, ClientIDType cid, PriceType p, SizeType s, SizeType show, Side side, bool is_shadow, N & notify ) 
             {
                 order_id_ = oid;
                 creation_time_ = t ;
@@ -155,7 +202,7 @@ namespace SDB {
 
         
         void clear() { 
-            reset(-1,-1, -1, -1,0,0,Side::Offer, false, NOOPNotify::instance());
+            reset(-1, -1, -1,0,0,Side::Offer, false, NOOPNotify::instance());
         }
 
         static bool reduce_size( const bool shadow, const bool other_side_shadow ) { 
@@ -188,10 +235,10 @@ namespace SDB {
         struct Hash { 
             using is_transparent = void;
             size_t operator()( const Order * ptr ) const { 
-                return std::hash<OrderIDType>()(ptr->order_id_);
+                return boost::hash<OrderIDType>()(ptr->order_id_);
             }
             size_t operator()( const OrderIDType order_id ) const { 
-                return std::hash<OrderIDType>()(order_id);
+                return boost::hash<OrderIDType>()(order_id);
             }
         };
         struct Eq { 
@@ -217,8 +264,8 @@ namespace std {
     inline string to_string( const Order & o ) { 
         std::ostringstream out; 
         out << "<O: c: " << o.creation_time_*1e-9
+            << " " << o.side_  
             << " oid: " << o.order_id_  
-            << " " << std::to_string(o.side_)  
             << " p: " << o.price_  
             //<< " ts: " << o.total_size_  
             << " show: " << o.show_  
@@ -372,7 +419,7 @@ namespace SDB {
         Level::SET all_bids_, all_offers_ ; 
         Order::PtrSet ptr_set_;
 
-        MatchingEngine() : next_order_id_(0), time_(0) { }
+        MatchingEngine() : time_(0) { next_order_id_.fill( std::numeric_limits<OrderIDType::value_type>::min() ); }
 
         friend std::ostream & operator<<(std::ostream & out, const MatchingEngine & l ) {
             out << "time: " << l.time_*1e-9 << '\n';
@@ -434,8 +481,8 @@ namespace SDB {
         template <INotifier N> 
             void add_simulation_order( const ClientIDType client_id, const PriceType price, const SizeType size, const SizeType show, const Side side, const bool is_shadow, N & notify) { 
                 //this method is for simulation. 
-                const OrderIDType oid = next_order_id_++;
-                add_order( oid, client_id, price, size, show, side, is_shadow, notify);
+                add_order( next_order_id_, client_id, price, size, show, side, is_shadow, notify);
+                increment( next_order_id_);
             }
         template <INotifier N> 
             void add_replay_order( const OrderIDType oid, const ClientIDType client_id, const PriceType price, const SizeType size, const Side side, const bool is_shadow, N & notify) { 
