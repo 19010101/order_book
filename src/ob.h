@@ -61,9 +61,14 @@ namespace SDB {
 namespace std {
     template <size_t N>
     std::ostream & operator<<(std::ostream & out, const std::array<std::uint8_t, N> & oid ) {
+        for (const auto i : oid) 
+            if (i < 0x7f) out << char(i);
+            else out <<  '<' << std::format( "{:X}", i ) << '>' ;
+        /*
         out << "0x" ; 
         for (const auto i : oid) 
             out <<  std::format( "{:x}", i );
+        */
         return out;
     }
     inline std::string to_string( const OrderIDType & oid) { 
