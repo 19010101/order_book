@@ -961,7 +961,25 @@ TEST_CASE( "increment", "[OrderIDType]" ) {
         CHECK(oid[i] == 0);
 
 }
+TEST_CASE( "parse", "[Utils]" ) {
+    using namespace SDB;
+    OrderIDType oid; 
+    CHECK( parse( "<FF>", oid ) );
+    CHECK( int(oid[0]) == 255 );
+    for (size_t i = 1; i < oid.size(); ++i)
+        CHECK(int(oid[i]) == 0 );
 
+    CHECK( parse( "s<FF>", oid ) );
+    CHECK( oid[0] == 's' );
+    CHECK( int(oid[1]) == 255 );
+    for (size_t i = 2; i < oid.size(); ++i)
+        CHECK(int(oid[i]) == 0 );
 
+    CHECK( parse( "<A1>s<FF>", oid ) );
+    CHECK( int(oid[0]) == 161 );
+    CHECK( oid[1] == 's' );
+    CHECK( int(oid[2]) == 255 );
+    for (size_t i = 3; i < oid.size(); ++i)
+        CHECK(int(oid[i]) == 0 );
 
-
+}

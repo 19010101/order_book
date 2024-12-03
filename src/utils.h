@@ -26,21 +26,23 @@ namespace SDB {
     }
 
     template<typename T> 
-        bool parse( std::string_view & str,  T & t ) { 
+        bool parse( const std::string_view & str,  T & t ) { 
             auto [ptr, ec] = std::from_chars( str.data(), str.data() + str.size() , t ) ;
             return ec != std::errc() or ptr != str.data()+str.size() ;
         }
-    template<size_t N> 
-        bool parse( std::string_view & str,  std::array<uint8_t,N> & t ) { 
-            auto c = str.begin();
+    template<typename T, size_t N> 
+        bool parse( const std::string_view & str,  std::array<T,N> & t ) { 
+            t.fill(std::numeric_limits<T>::min());
+            auto c = str.data();
+            const auto str_end = str.data() + str.size();
             auto u = t.begin();
-            while (c != str.end() and u != t.end() ) {
+            while ((c < str_end) and (u != t.end()) ) {
                 switch (*c) {
                     case '<' : 
                     {
                         ++c;
                         const auto end = c+2 ;
-                        if (end >= str.end() or *end != '>' ) return false;
+                        if (end >= str_end or *end != '>' ) return false;
                         auto [ptr, ec] = std::from_chars( c, end , *u, 16 ) ;
                         if ( ec != std::errc() or ptr != end ) return false;
                         c += 3;

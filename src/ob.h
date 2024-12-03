@@ -2,6 +2,7 @@
 #include <set>
 #include <array>
 #include <cstdint>
+#include <format>
 #include <stdexcept>
 #include <unordered_set>
 #include <limits>
@@ -13,9 +14,9 @@
 //#include <boost/intrusive/list.hpp>
 
 namespace SDB { 
-    enum class Side : uint8_t { Bid, Offer } ; 
+    enum class Side : std::uint8_t { Bid, Offer } ; 
 
-    enum class NotifyMessageType : uint8_t { Ack, Trade, Cancel, End } ; 
+    enum class NotifyMessageType : std::uint8_t { Ack, Trade, Cancel, End } ; 
 
 }
 
@@ -50,7 +51,7 @@ namespace SDB {
         return out;
     }
 
-    using OrderIDType = std::array<uint8_t, 12>  ; 
+    using OrderIDType = std::array<std::uint8_t, 12>  ; 
     using TimeType = int64_t ; 
     using ClientIDType = uint32_t;
     using PriceType = int16_t;
@@ -59,7 +60,7 @@ namespace SDB {
 } 
 namespace std {
     template <size_t N>
-    std::ostream & operator<<(std::ostream & out, const std::array<uint8_t, N> & oid ) {
+    std::ostream & operator<<(std::ostream & out, const std::array<std::uint8_t, N> & oid ) {
         out << "0x" ; 
         for (const auto i : oid) 
             out <<  std::format( "{:x}", i );
@@ -133,7 +134,7 @@ namespace SDB{
         template <INotifier N>
             void reset( TimeType t, ClientIDType cid, PriceType p, SizeType s, SizeType show, Side side, bool is_shadow, N & notify ) 
             {
-                order_id_.fill( std::numeric_limits<uint8_t>::max() ) ;
+                order_id_.fill( std::numeric_limits<std::uint8_t>::max() ) ;
                 creation_time_ = t ;
                 client_id_ = cid;
                 price_ = p;
