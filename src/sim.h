@@ -7,10 +7,14 @@
 #include <boost/random/bernoulli_distribution.hpp> 
 #include <boost/random/mersenne_twister.hpp> 
 
+#ifndef _MSC_VER
 #pragma GCC diagnostic push 
 #pragma GCC diagnostic ignored "-Wunused-parameter" 
+#endif // _MSC_VER
 #include <boost/heap/fibonacci_heap.hpp>
+#ifndef _MSC_VER
 #pragma GCC diagnostic pop 
+#endif // _MSC_VER
 
 #include <cmath>
 #include <limits>

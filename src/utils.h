@@ -28,7 +28,9 @@ namespace SDB {
     template<typename T> 
         bool parse( const std::string_view & str,  T & t ) { 
             auto [ptr, ec] = std::from_chars( str.data(), str.data() + str.size() , t ) ;
-            return ec != std::errc() or ptr != str.data()+str.size() ;
+            return 
+                ec == std::errc() and  //no error while parsing AND
+                ptr == str.data()+str.size() ; //we consumed all of str 
         }
     template<typename T, size_t N> 
         bool parse( const std::string_view & str,  std::array<T,N> & t ) { 
