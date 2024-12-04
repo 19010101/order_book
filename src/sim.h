@@ -553,7 +553,7 @@ namespace SDB {
                 const std::vector<TimeType> & times,  
                 const std::vector<double> & algo_prices,  
                 const Side side,
-                OrderIDType oid, 
+                const std::unordered_set<OrderIDType, boost::hash<OrderIDType>> & ids_not_to_be_used_by_simulator, 
                 const ClientIDType cid_shadow,
                 const ClientIDType default_cid_market,
                 MatchingEngine & eng,
@@ -566,6 +566,9 @@ namespace SDB {
             if (times.size() > msgs.size()) throw std::runtime_error(
                     "times sizes don't work: " + std::to_string(times.size()) + " vs " + std::to_string( msgs.size()) );
 
+            OrderIDType oid; 
+            oid.fill(0);
+            increment(oid, ids_not_to_be_used_by_simulator);
 
             //PriceType algo_price;
             double algo_price = std::numeric_limits<double>::quiet_NaN();
@@ -628,7 +631,7 @@ namespace SDB {
                             handler.simulated_order_status_ == OrderStatus::End ) {
                         if (handler.simulated_order_status_ != OrderStatus::End) 
                             eng.cancel_order( oid, handler ); //cancel if not already gone.
-                        increment(oid);
+                        increment(oid, ids_not_to_be_used_by_simulator);
                         eng.add_replay_order( oid , cid_shadow, algo_price_t, 1, side, true, handler );
                     }
                     algo_price = algo_prices[time_index]; 

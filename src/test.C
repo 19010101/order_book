@@ -466,13 +466,17 @@ TEST_CASE( "simulate_a - no trades", "[ClientState]" ) {
     
     std::vector<OrderBookEventWithClientID> msgs ;
     OrderIDType oid; 
+    std::unordered_set<OrderIDType, boost::hash<OrderIDType> > set;
     oid.fill(0);
     msgs.emplace_back( OrderBookEvent( 0, oid, 100, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,0 ) ;
+    set.emplace(oid);
     increment(oid);
     msgs.emplace_back( OrderBookEvent( 1, oid, 101, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,1 ) ;
+    set.emplace(oid);
     increment(oid);
     msgs.emplace_back( OrderBookEvent( 2, oid, 100, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,2 ) ;
     msgs.emplace_back( OrderBookEvent( 3, oid, 100, 0, 2, 0, NotifyMessageType::Ack, Side::Bid  ) ,3 ) ;
+    set.emplace(oid);
     increment(oid);
 
     std::vector<TimeType> times{0,1,2,3} ;
@@ -481,7 +485,7 @@ TEST_CASE( "simulate_a - no trades", "[ClientState]" ) {
 
     MatchingEngine eng;
     RecordingSimulationHandler<OrderBookEventWithClientID> recorder( &eng.mem_, true, true, true , nullptr );
-    simulate_a( msgs, times, prices, Side::Offer, oid, 4, 5, eng, recorder );
+    simulate_a( msgs, times, prices, Side::Offer, set, 4, 5, eng, recorder );
 
     CHECK( msgs.size() <= recorder.msgs_.size() );
 
@@ -494,13 +498,17 @@ TEST_CASE( "simulate_a - one trade", "[ClientState]" ) {
     
     std::vector<OrderBookEventWithClientID> msgs ;
     OrderIDType oid; 
+    std::unordered_set<OrderIDType, boost::hash<OrderIDType> > set;
     oid.fill(0);
     msgs.emplace_back( OrderBookEvent( 0, oid, 100, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,0 ) ;
+    set.emplace(oid);
     increment(oid);
     msgs.emplace_back( OrderBookEvent( 1, oid, 101, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,1 ) ;
+    set.emplace(oid);
     increment(oid);
     msgs.emplace_back( OrderBookEvent( 2, oid, 100, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,2 ) ;
     msgs.emplace_back( OrderBookEvent( 3, oid, 100, 0, 4, 0, NotifyMessageType::Ack, Side::Bid  ) ,3 ) ;
+    set.emplace(oid);
     increment(oid);
 
     std::vector<TimeType> times{0,1,2,3} ;
@@ -508,7 +516,7 @@ TEST_CASE( "simulate_a - one trade", "[ClientState]" ) {
 
     MatchingEngine eng;
     RecordingSimulationHandler<OrderBookEventWithClientID> recorder( &eng.mem_, true, true, true, nullptr );
-    simulate_a( msgs, times, prices, Side::Offer, oid, 4, 5, eng, recorder );
+    simulate_a( msgs, times, prices, Side::Offer, set, 4, 5, eng, recorder );
 
     CHECK( msgs.size() <= recorder.msgs_.size() );
 
@@ -523,14 +531,18 @@ TEST_CASE( "simulate_a - one trade and refill", "[ClientState]" ) {
     using namespace SDB;
     
     std::vector<OrderBookEventWithClientID> msgs ;
+    std::unordered_set<OrderIDType, boost::hash<OrderIDType> > set;
     OrderIDType oid; 
     oid.fill(0);
     msgs.emplace_back( OrderBookEvent( 0, oid, 100, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,0 ) ;
+    set.emplace(oid);
     increment(oid);
     msgs.emplace_back( OrderBookEvent( 1, oid, 101, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,1 ) ;
+    set.emplace(oid);
     increment(oid);
     msgs.emplace_back( OrderBookEvent( 2, oid, 100, 0, 2, 0, NotifyMessageType::Ack, Side::Offer) ,2 ) ;
     msgs.emplace_back( OrderBookEvent( 3, oid, 100, 0, 4, 0, NotifyMessageType::Ack, Side::Bid  ) ,3 ) ;
+    set.emplace(oid);
     increment(oid);
 
     std::vector<TimeType> times{0,1,2,3} ;
@@ -538,7 +550,7 @@ TEST_CASE( "simulate_a - one trade and refill", "[ClientState]" ) {
 
     MatchingEngine eng;
     RecordingSimulationHandler<OrderBookEventWithClientID> recorder( &eng.mem_, true, true, true, nullptr );
-    simulate_a( msgs, times, prices, Side::Offer, oid, 4, 5, eng, recorder );
+    simulate_a( msgs, times, prices, Side::Offer, set, 4, 5, eng, recorder );
 
     CHECK( msgs.size() <= recorder.msgs_.size() );
 
@@ -583,13 +595,13 @@ TEST_CASE( "record - simulate_a - no market impact.", "[ClientState]" ) {
     REQUIRE( not recorder.msgs_.empty() );
     REQUIRE( not recorder.snapshots_.empty() );
 
+    std::unordered_set<OrderIDType, boost::hash<OrderIDType> > set;
     std::vector<TimeType> times;
     times.reserve( recorder.msgs_.size() );
     times.emplace_back(recorder.msgs_.front().event_time_) ;
-    OrderIDType oid ; 
-    oid.fill(0);
+    set.emplace(recorder.msgs_.front().oid_);
     for ( auto it = recorder.msgs_.begin()+1; it != recorder.msgs_.end(); ++it) {
-        oid = std::max( oid, it->oid_ ); //TODO max doesn't make sense here.
+        set.emplace( it->oid_ ); 
         if (it->event_time_ != times.back())
             times.emplace_back( it->event_time_ );
     }
@@ -616,8 +628,7 @@ TEST_CASE( "record - simulate_a - no market impact.", "[ClientState]" ) {
 
     MatchingEngine eng2;
     RecordingSimulationHandler<OrderBookEventWithClientID> recorder2( &eng2.mem_, true, false, true, nullptr );
-    increment(oid);
-    simulate_a( recorder.msgs_, times, prices, Side::Bid, oid, 0, 1, eng2, recorder2 );
+    simulate_a( recorder.msgs_, times, prices, Side::Bid, set, 0, 1, eng2, recorder2 );
 
     CHECK( recorder.msgs_.size() <= recorder2.msgs_.size() );
     CHECK( recorder.snapshots_.size() == recorder2.snapshots_.size() );
@@ -822,8 +833,7 @@ TEST_CASE( "simulate_a single param, run it over and over.", "[StatisticsSimulat
     std::vector<OrderBookEvent> history; 
     std::vector<TimeType> times ; 
     std::vector<double> prices ; 
-    OrderIDType oid ; 
-    oid.fill(0);
+    std::unordered_set<OrderIDType, boost::hash<OrderIDType> > set;
     {
         int seed = 0; 
         boost::random::mt19937 mt;
@@ -856,8 +866,9 @@ TEST_CASE( "simulate_a single param, run it over and over.", "[StatisticsSimulat
 
         times.reserve( recorder.msgs_.size() );
         times.emplace_back(recorder.msgs_.front().event_time_) ;
+        set.emplace(recorder.msgs_.front().oid_);
         for ( auto it = recorder.msgs_.begin()+1; it != recorder.msgs_.end(); ++it) {
-            oid = std::max( oid, it->oid_ );
+            set.emplace(it->oid_ );
             if (it->event_time_ != times.back())
                 times.emplace_back( it->event_time_ );
         }
@@ -891,8 +902,7 @@ TEST_CASE( "simulate_a single param, run it over and over.", "[StatisticsSimulat
         std::vector<double> adjusted_prices(prices);
         const double delta = (i-half)/double(half)*max_adj;
         for ( auto & p : adjusted_prices ) p += delta;
-        increment(oid);
-        simulate_a( history, times, adjusted_prices, Side::Bid, oid, 0, 1, eng2, stats );
+        simulate_a( history, times, adjusted_prices, Side::Bid, set, 0, 1, eng2, stats );
         std::cout << "4 mean cost [ticks]" << delta << " " << stats.sum_return_by_dT_ / stats.sum_dT_ << std::endl;
         std::cout << "4 total time [sec]" << stats.sum_dT_*1e-9 << std::endl;
         CHECK( not std::isnan( stats.sum_return_by_dT_ ) );

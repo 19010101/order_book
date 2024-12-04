@@ -62,7 +62,7 @@ namespace std {
     template <size_t N>
     std::ostream & operator<<(std::ostream & out, const std::array<std::uint8_t, N> & oid ) {
         for (const auto i : oid) 
-            if (i < 0x7f) out << char(i);
+            if (i > 0x20 and i < 0x7f) out << char(i);
             else out <<  '<' << std::format( "{:X}", i ) << '>' ;
         /*
         out << "0x" ; 
@@ -99,6 +99,13 @@ namespace SDB{
                     ++it;
             }
             throw std::runtime_error("maximum reached in increment: " + std::to_string(oid) );
+        }
+
+    template <typename OID, typename SET>
+        inline void increment( OID & oid, const SET & set ) {
+            increment(oid) ; 
+            while (set.contains(oid))
+                increment(oid);
         }
 
     struct Order;
@@ -503,7 +510,9 @@ namespace SDB {
                         std::cerr << "OID mismatch " << oid << " " << *it << " " << std::to_string(**it) << std::endl;  
                 if ( 1 != std::distance( eq_range.first, eq_range.second ) ) { 
                     //for (auto it = eq_range.first; it != eq_range.second; ++it) std::cerr << "OOOPS " << oid << " " << *it << " " << std::to_string(**it) << std::endl;  
-                    throw std::runtime_error("cancelling more than one order with oid " +std::to_string(oid)  + ". Num orders is " +
+                    throw std::runtime_error( std::to_string(time_) + 
+                            ": cancelling more than one order with oid " +
+                            std::to_string(oid)  + ". Num orders is " +
                             std::to_string(std::distance( eq_range.first, eq_range.second ) ) + "." );
                 }
                 Order & order = **eq_range.first;
