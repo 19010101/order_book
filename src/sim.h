@@ -1,4 +1,5 @@
 #pragma once
+#include "boost/multi_index/ordered_index_fwd.hpp"
 #include "ob.h"
 
 #include <boost/random/exponential_distribution.hpp> 
@@ -6,6 +7,13 @@
 #include <boost/random/normal_distribution.hpp> 
 #include <boost/random/bernoulli_distribution.hpp> 
 #include <boost/random/mersenne_twister.hpp> 
+
+#include <boost/multi_index_container.hpp>
+#include <boost/multi_index/ordered_index.hpp>
+#include <boost/multi_index/hashed_index.hpp>
+#include <boost/multi_index/identity.hpp>
+#include <boost/multi_index/member.hpp>
+
 
 #ifndef _MSC_VER
 #pragma GCC diagnostic push 
@@ -46,60 +54,326 @@ namespace SDB {
         }
 
 
-    struct ClientType { 
+    struct MarketState { 
+        TimeType time_ ; 
+        double wm_ ;
+        std::array<PriceType, 2> bid_prices;
+        std::array<SizeType, 2>  bid_sizes;
+        std::array<PriceType, 2> ask_prices;
+        std::array<SizeType, 2>  ask_sizes ;
+    };
 
-        const std::string tag_ ; 
+    struct Transport ;
+
+    struct Agent {
+        const MarketState & market_ ; 
+        TimeType next_action_time_ ;
+
+        struct OrderData { 
+            const int local_id_;
+            OrderIDType order_id_ ; 
+            const PriceType price_ ; 
+            const SizeType total_size_ ; 
+            const SizeType show_ ; 
+            mutable SizeType remaining_size_ ; 
+            const Side side_ ; 
+            bool waiting_to_be_cancelled_;
+            OrderData ( const int local_id , PriceType price, SizeType total_size, SizeType show , Side side  ) :
+                local_id_(local_id), price_(price), total_size_(total_size), show_(show), remaining_size_(total_size), side_(side), 
+                waiting_to_be_cancelled_(false)
+            { 
+                order_id_.fill( std::numeric_limits<OrderIDType::value_type>::max() ); 
+            }
+
+            struct HashLocalID { 
+                using is_transparent = void;
+                size_t operator()( const int local_id ) const { 
+                    return boost::hash<int>()(local_id) ; 
+                }
+                size_t operator()( const OrderData & od ) const { 
+                    return this->operator()(od.local_id_) ; 
+                }
+            };
+            struct EqLocalID { 
+                using is_transparent = void;
+                bool operator()( const int local_id , const OrderData & od) const { 
+                    return od.local_id_ == local_id ; 
+                }
+                bool operator()( const OrderData & od2 , const OrderData & od) const { 
+                    return od.local_id_ == od2.local_id_ ; 
+                }
+                bool operator()(  const OrderData & od, const int local_id ) const { 
+                    return od.local_id_ == local_id ; 
+                }
+            };
+            struct HashOID { 
+                using is_transparent = void;
+                size_t operator()( const OrderIDType & oid ) const { 
+                    return boost::hash<OrderIDType>()(oid) ; 
+                }
+                size_t operator()( const OrderData & od ) const { 
+                    return this->operator()(od.order_id_) ; 
+                }
+            };
+            struct EqOID { 
+                using is_transparent = void;
+                bool operator()( const OrderIDType oid , const OrderData & od) const { 
+                    return od.order_id_ == oid ; 
+                }
+                bool operator()( const OrderData & od2 , const OrderData & od) const { 
+                    return od.order_id_ == od2.order_id_ ; 
+                }
+                bool operator()(  const OrderData & od, const OrderIDType & oid ) const { 
+                    return od.order_id_ == oid ; 
+                }
+            };
+
+            using LocalIDSet = std::unordered_set<OrderData, HashLocalID, EqLocalID> ;
+            using OIDSet = std::unordered_set<OrderData, HashOID, EqOID> ;
+
+            using SET = boost::multi_index::multi_index_container<
+                OrderData, 
+                boost::multi_index::indexed_by< 
+                    boost::multi_index::hashed_unique< 
+                        boost::multi_index::member< OrderData, const int , &OrderData::local_id_ >  
+                    >,
+                    boost::multi_index::hashed_non_unique< //non unique only at time of creation when all oids are same.
+                        boost::multi_index::member< OrderData, OrderIDType, &OrderData::order_id_ >  , 
+                        boost::hash<OrderIDType>
+                    >
+                >
+            >;
+        };
+
+        OrderData::OIDSet orders_; 
+        OrderData::LocalIDSet unacked_orders_; 
+
+        Agent( const MarketState & market ) : 
+            market_(market), 
+            next_action_time_(std::numeric_limits<TimeType>::max()) {} ;
+
+        virtual void handle_message( const OrderData & order_data, 
+                const NotifyMessageType mtype, 
+                const SizeType traded_size, 
+                const PriceType traded_price ) = 0 ;
+
+        void handle_own_order_message( 
+                const NotifyMessageType mtype, 
+                const int local_oid, 
+                const OrderIDType & oid , 
+                const SizeType traded_size, 
+                const PriceType traded_price ) {
+            OrderData::LocalIDSet::const_iterator local_oid_iterator ;
+            OrderData::OIDSet::const_iterator oid_iterator ;
+            switch( mtype ) { 
+                case NotifyMessageType::Ack : 
+                    local_oid_iterator = unacked_orders_.find(local_oid);
+                    if (local_oid_iterator  == unacked_orders_.end())
+                        throw std::runtime_error("Cannot find local oid: " + std::to_string(local_oid));
+                    else {
+                        OrderData od = *local_oid_iterator;
+                        od.order_id_ = oid;
+                        const auto pr = orders_.emplace( std::move( od ) );
+                        if (not pr.second) 
+                            throw std::runtime_error("Cannot insert oid: " + std::to_string(oid));
+                        else
+                            oid_iterator = pr.first;
+                    }
+                    break;
+                case NotifyMessageType::Trade : 
+                    oid_iterator = orders_.find(oid);
+                    if (oid_iterator  == orders_.end())
+                        throw std::runtime_error("Cannot find oid (t): " + std::to_string(oid));
+                    else 
+                        oid_iterator->remaining_size_ -= traded_size; 
+                    break;
+                case NotifyMessageType::Cancel : 
+                    oid_iterator = orders_.find(oid);
+                    if (oid_iterator  == orders_.end())
+                        throw std::runtime_error("Cannot find oid (c): " + std::to_string(oid));
+                    else if (not oid_iterator->waiting_to_be_cancelled_)
+                        throw std::runtime_error("We didn't ask to be cancelled: " + std::to_string(oid));
+                    else
+                        oid_iterator->remaining_size_ = 0 ;
+                    break;
+                case NotifyMessageType::End : 
+                    oid_iterator = orders_.find(oid);
+                    if (oid_iterator  == orders_.end())
+                        throw std::runtime_error("Cannot find oid (e): " + std::to_string(oid));
+                    else if (0 != oid_iterator->remaining_size_)
+                        throw std::runtime_error("We didn't expect this order to end: " + std::to_string(oid));
+                    break;
+            };
+            handle_message(  *oid_iterator, mtype, traded_size, traded_price );
+            if (mtype == NotifyMessageType::End)
+                orders_.erase( oid_iterator );
+        }; 
+        virtual void markets_state_changed(Transport & transport) = 0 ; //market state has changed. determine next action time if needed
+        //method to make time go faster:
+        TimeType next_action_time_and_type() { return next_action_time_ ; }  ; 
+        //actions in the market:
+
+    };
+
+    struct Transport {
+        virtual void place_order( const Agent::OrderData & od ) = 0 ;
+        virtual void cancel( const OrderIDType & oid ) = 0 ;
+    };
+
+    struct PriceMakerAroundWM : public Agent { 
+        //these agents decide on the price based on normal distribution around wm.
+        //cancel time is also coming from a distribution. 
+
+        using CancellationTime = struct { 
+            const TimeType t_cancel_; 
+            const OrderIDType order_id_;
+        } ; 
+
+        using CancellationTimes = boost::multi_index::multi_index_container<
+            CancellationTime, 
+            boost::multi_index::indexed_by< 
+                boost::multi_index::ordered_non_unique< 
+                    boost::multi_index::member< CancellationTime, const TimeType , &CancellationTime::t_cancel_ >  
+                >,
+                boost::multi_index::hashed_unique< 
+                    boost::multi_index::member< CancellationTime, const OrderIDType , &CancellationTime::order_id_ >  , 
+                    boost::hash<OrderIDType>
+                >
+            >
+        >;
+
+        int local_id_counter_;
         boost::random::mt19937 & mt_;
-
-        const double placement_lambda_, cancellation_lambda_, order_size_mean_, order_price_std_, side_mean_;
-
         const boost::random::exponential_distribution<> placement_, cancellation_;
         mutable boost::random::normal_distribution<double> order_price_;
         const boost::random::poisson_distribution<SizeType, double> order_size_;
-        const boost::random::bernoulli_distribution<double> side_;
+        const size_t n_orders_ ;
+        TimeType placement_time_ ; 
 
-        ClientType( 
-                const std::string & tag, 
-                boost::random::mt19937 & mt,
-                const double placement_lambda, const double cancellation_lambda, double order_size_mean,
-                double order_price_std, double side_mean) :
-            tag_(tag),
-            mt_(mt),
-            placement_lambda_(placement_lambda), 
-            cancellation_lambda_(cancellation_lambda), 
-            order_size_mean_(order_size_mean) , 
-            order_price_std_(order_price_std) , 
-            side_mean_(side_mean),
-            placement_(placement_lambda_), 
-            cancellation_(cancellation_lambda_), 
-            order_price_( 0, order_price_std_ ),
-            order_size_(order_size_mean_) , 
-            side_(side_mean_) 
+        CancellationTimes cancellation_times_ ; 
+
+        PriceMakerAroundWM( const MarketState & market,
+                boost::random::mt19937 & mt, 
+                const double placement_lambda, 
+                const double cancellation_lambda, 
+                double order_price_mean, //how far from wm the price is 
+                double order_price_std,
+                double order_size_mean,
+                const size_t n_orders
+                ) : Agent(market), 
+                local_id_counter_(0),
+                mt_(mt),
+                placement_(placement_lambda), 
+                cancellation_(cancellation_lambda) , 
+                order_price_(order_price_mean, order_price_std ),
+                order_size_(order_size_mean),
+                n_orders_(n_orders)
+        {
+            next_action_time_ = safe_round<TimeType>(1e9*placement_(mt_));
+            placement_time_ = next_action_time_; 
+        }
+
+        virtual void markets_state_changed(Transport & transport) {
+            //market state has changed. determine next action time if needed
+            if (market_.time_ >= placement_time_ and orders_.size() + unacked_orders_.size() < n_orders_ and not std::isnan( market_.wm_ ) ) {
+                const double d_price = order_price_( mt_ );
+                OrderData od( local_id_counter_++, safe_round<PriceType>( d_price + market_.wm_ ) , 1 + order_size_(mt_) , 2, (d_price > 0) ? Side::Offer : Side::Bid ); 
+                unacked_orders_.emplace( std::move( od ) );
+                transport.place_order( od );
+                placement_time_ += safe_round<TimeType>(1e9*placement_(mt_));
+            }
+            auto & index = cancellation_times_.get<0>() ; 
+            while( not index.empty() and market_.time_ >= index.begin()->t_cancel_ ) { 
+                transport.cancel( index.begin()->order_id_ );
+                index.erase(index.begin());
+            }
+            if (index.empty())
+                next_action_time_ = placement_time_ ;
+            else 
+                next_action_time_ = std::min(placement_time_, index.begin()->t_cancel_) ;
+        }
+
+        virtual void handle_message( const OrderData & order_data, const NotifyMessageType mtype, 
+                const SizeType , const PriceType  ) {
+            switch (mtype) {
+                case NotifyMessageType::Ack : 
+                    { 
+                        //setup cancellation time
+                        TimeType cancellation_time =  market_.time_ + cancellation_( mt_ );
+                        cancellation_times_.emplace( cancellation_time, order_data.order_id_ );
+                        next_action_time_ = std::min( next_action_time_, cancellation_time );
+                        break;
+                    } 
+                case NotifyMessageType::Cancel : 
+                case NotifyMessageType::End : 
+                    {
+                        cancellation_times_.get<1>().erase( order_data.order_id_ );
+                        break;
+                    }
+                case NotifyMessageType::Trade : 
+                    break;
+            }
+        }
+    };
+
+
+    struct ClientType { 
+
+        public : 
+            const std::string tag_ ; 
+        private : 
+            boost::random::mt19937 & mt_;
+
+            const double placement_lambda_, cancellation_lambda_, order_size_mean_, order_price_std_, side_mean_;
+
+            const boost::random::exponential_distribution<> placement_, cancellation_;
+            mutable boost::random::normal_distribution<double> order_price_;
+            const boost::random::poisson_distribution<SizeType, double> order_size_;
+            const boost::random::bernoulli_distribution<double> side_;
+
+        public : 
+            ClientType( 
+                    const std::string & tag, 
+                    boost::random::mt19937 & mt,
+                    const double placement_lambda, const double cancellation_lambda, double order_size_mean,
+                    double order_price_std, double side_mean) :
+                tag_(tag),
+                mt_(mt),
+                placement_lambda_(placement_lambda), 
+                cancellation_lambda_(cancellation_lambda), 
+                order_size_mean_(order_size_mean) , 
+                order_price_std_(order_price_std) , 
+                side_mean_(side_mean),
+                placement_(placement_lambda_), 
+                cancellation_(cancellation_lambda_), 
+                order_price_( 0, order_price_std_ ),
+                order_size_(order_size_mean_) , 
+                side_(side_mean_) 
         { }
 
-        SizeType get_size() const { 
-            return 1 + order_size_(mt_);
-        }
+            SizeType get_size() const { 
+                return 1 + order_size_(mt_);
+            }
 
-        double get_price() const { 
-            return order_price_(mt_);
-        }
-        TimeType get_placement_dt() const {
-            //return TimeType(lround(1e9*placement_(mt_)));
-            return safe_round<TimeType>(1e9*placement_(mt_));
-        }
-        TimeType get_cancellation_dt( ) const {
-            //return TimeType(lround(1e9*cancellation_(mt_)));
-            return safe_round<TimeType>(1e9*cancellation_(mt_));
-        }
+            double get_price() const { 
+                return order_price_(mt_);
+            }
+            TimeType get_placement_dt() const {
+                //return TimeType(lround(1e9*placement_(mt_)));
+                return safe_round<TimeType>(1e9*placement_(mt_));
+            }
+            TimeType get_cancellation_dt( ) const {
+                //return TimeType(lround(1e9*cancellation_(mt_)));
+                return safe_round<TimeType>(1e9*cancellation_(mt_));
+            }
 
-        auto get_next_placement_info() const { 
-            const TimeType t = get_placement_dt();
-            const double p = get_price();
-            const SizeType size = get_size();
-            const Side side = side_(mt_) ? Side::Bid : Side::Offer;
-            return  std::make_tuple(t, p, size, side);
-        }
+            auto get_next_placement_info() const { 
+                const TimeType t = get_placement_dt();
+                const double p = get_price();
+                const SizeType size = get_size();
+                const Side side = side_(mt_) ? Side::Bid : Side::Offer;
+                return  std::make_tuple(t, p, size, side);
+            }
 
     };
 
@@ -520,7 +794,14 @@ namespace SDB {
             void log( const MatchingEngine & eng ) {
                 if (mem_ != nullptr)
                     snapshots_.emplace_back( eng.snapshot(record_shadow_) );
-                wm_.emplace_back( eng.time_,  eng.wm() );  
+                if ( 
+                        not wm_.empty() and 
+                        std::get<0>(wm_.back()) == eng.time_ )  
+                    //update last one if time is same
+                    std::get<1>(wm_.back()) = eng.wm();
+                else
+                    //different time, so push back
+                    wm_.emplace_back( eng.time_,  eng.wm() );  
             }
 
             //mem management
