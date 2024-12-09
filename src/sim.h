@@ -8,12 +8,6 @@
 #include <boost/random/bernoulli_distribution.hpp> 
 #include <boost/random/mersenne_twister.hpp> 
 
-#include <boost/multi_index_container.hpp>
-#include <boost/multi_index/ordered_index.hpp>
-#include <boost/multi_index/hashed_index.hpp>
-#include <boost/multi_index/identity.hpp>
-#include <boost/multi_index/member.hpp>
-
 
 #ifndef _MSC_VER
 #pragma GCC diagnostic push 
@@ -31,290 +25,6 @@
 namespace SDB { 
 
     constexpr double EPS = 1e-10 ; 
-
-    template<typename T> 
-        bool safe_round( const double & d , T & out ) { 
-            const auto ll = std::llround( d );
-            out = T( ll );
-            return 
-                d  <= std::numeric_limits<decltype(ll)>::max() and 
-                d  >= std::numeric_limits<decltype(ll)>::min() and 
-                ll <= std::numeric_limits<T>::max() and 
-                ll >= std::numeric_limits<T>::min() ;
-        }
-        
-    template<typename T> 
-        T safe_round( const double & d ) { 
-            T t;
-            if ( std::isnan( d ) ) 
-                throw std::runtime_error(std::string("Cannot convert NaN to ") + typeid(T).name() );
-            if ( not safe_round(d,t) ) throw std::runtime_error(
-                    "cannot convert " + std::to_string(d) + " to " + typeid(T).name() );
-            return t;
-        }
-
-
-    struct MarketState { 
-        TimeType time_ ; 
-        double wm_ ;
-        std::array<PriceType, 2> bid_prices;
-        std::array<SizeType, 2>  bid_sizes;
-        std::array<PriceType, 2> ask_prices;
-        std::array<SizeType, 2>  ask_sizes ;
-    };
-
-    struct Transport ;
-
-    struct Agent {
-        const MarketState & market_ ; 
-        TimeType next_action_time_ ;
-
-        struct OrderData { 
-            const int local_id_;
-            OrderIDType order_id_ ; 
-            const PriceType price_ ; 
-            const SizeType total_size_ ; 
-            const SizeType show_ ; 
-            mutable SizeType remaining_size_ ; 
-            const Side side_ ; 
-            bool waiting_to_be_cancelled_;
-            OrderData ( const int local_id , PriceType price, SizeType total_size, SizeType show , Side side  ) :
-                local_id_(local_id), price_(price), total_size_(total_size), show_(show), remaining_size_(total_size), side_(side), 
-                waiting_to_be_cancelled_(false)
-            { 
-                order_id_.fill( std::numeric_limits<OrderIDType::value_type>::max() ); 
-            }
-
-            struct HashLocalID { 
-                using is_transparent = void;
-                size_t operator()( const int local_id ) const { 
-                    return boost::hash<int>()(local_id) ; 
-                }
-                size_t operator()( const OrderData & od ) const { 
-                    return this->operator()(od.local_id_) ; 
-                }
-            };
-            struct EqLocalID { 
-                using is_transparent = void;
-                bool operator()( const int local_id , const OrderData & od) const { 
-                    return od.local_id_ == local_id ; 
-                }
-                bool operator()( const OrderData & od2 , const OrderData & od) const { 
-                    return od.local_id_ == od2.local_id_ ; 
-                }
-                bool operator()(  const OrderData & od, const int local_id ) const { 
-                    return od.local_id_ == local_id ; 
-                }
-            };
-            struct HashOID { 
-                using is_transparent = void;
-                size_t operator()( const OrderIDType & oid ) const { 
-                    return boost::hash<OrderIDType>()(oid) ; 
-                }
-                size_t operator()( const OrderData & od ) const { 
-                    return this->operator()(od.order_id_) ; 
-                }
-            };
-            struct EqOID { 
-                using is_transparent = void;
-                bool operator()( const OrderIDType oid , const OrderData & od) const { 
-                    return od.order_id_ == oid ; 
-                }
-                bool operator()( const OrderData & od2 , const OrderData & od) const { 
-                    return od.order_id_ == od2.order_id_ ; 
-                }
-                bool operator()(  const OrderData & od, const OrderIDType & oid ) const { 
-                    return od.order_id_ == oid ; 
-                }
-            };
-
-            using LocalIDSet = std::unordered_set<OrderData, HashLocalID, EqLocalID> ;
-            using OIDSet = std::unordered_set<OrderData, HashOID, EqOID> ;
-
-            using SET = boost::multi_index::multi_index_container<
-                OrderData, 
-                boost::multi_index::indexed_by< 
-                    boost::multi_index::hashed_unique< 
-                        boost::multi_index::member< OrderData, const int , &OrderData::local_id_ >  
-                    >,
-                    boost::multi_index::hashed_non_unique< //non unique only at time of creation when all oids are same.
-                        boost::multi_index::member< OrderData, OrderIDType, &OrderData::order_id_ >  , 
-                        boost::hash<OrderIDType>
-                    >
-                >
-            >;
-        };
-
-        OrderData::OIDSet orders_; 
-        OrderData::LocalIDSet unacked_orders_; 
-
-        Agent( const MarketState & market ) : 
-            market_(market), 
-            next_action_time_(std::numeric_limits<TimeType>::max()) {} ;
-
-        virtual void handle_message( const OrderData & order_data, 
-                const NotifyMessageType mtype, 
-                const SizeType traded_size, 
-                const PriceType traded_price ) = 0 ;
-
-        void handle_own_order_message( 
-                const NotifyMessageType mtype, 
-                const int local_oid, 
-                const OrderIDType & oid , 
-                const SizeType traded_size, 
-                const PriceType traded_price ) {
-            OrderData::LocalIDSet::const_iterator local_oid_iterator ;
-            OrderData::OIDSet::const_iterator oid_iterator ;
-            switch( mtype ) { 
-                case NotifyMessageType::Ack : 
-                    local_oid_iterator = unacked_orders_.find(local_oid);
-                    if (local_oid_iterator  == unacked_orders_.end())
-                        throw std::runtime_error("Cannot find local oid: " + std::to_string(local_oid));
-                    else {
-                        OrderData od = *local_oid_iterator;
-                        od.order_id_ = oid;
-                        const auto pr = orders_.emplace( std::move( od ) );
-                        if (not pr.second) 
-                            throw std::runtime_error("Cannot insert oid: " + std::to_string(oid));
-                        else
-                            oid_iterator = pr.first;
-                    }
-                    break;
-                case NotifyMessageType::Trade : 
-                    oid_iterator = orders_.find(oid);
-                    if (oid_iterator  == orders_.end())
-                        throw std::runtime_error("Cannot find oid (t): " + std::to_string(oid));
-                    else 
-                        oid_iterator->remaining_size_ -= traded_size; 
-                    break;
-                case NotifyMessageType::Cancel : 
-                    oid_iterator = orders_.find(oid);
-                    if (oid_iterator  == orders_.end())
-                        throw std::runtime_error("Cannot find oid (c): " + std::to_string(oid));
-                    else if (not oid_iterator->waiting_to_be_cancelled_)
-                        throw std::runtime_error("We didn't ask to be cancelled: " + std::to_string(oid));
-                    else
-                        oid_iterator->remaining_size_ = 0 ;
-                    break;
-                case NotifyMessageType::End : 
-                    oid_iterator = orders_.find(oid);
-                    if (oid_iterator  == orders_.end())
-                        throw std::runtime_error("Cannot find oid (e): " + std::to_string(oid));
-                    else if (0 != oid_iterator->remaining_size_)
-                        throw std::runtime_error("We didn't expect this order to end: " + std::to_string(oid));
-                    break;
-            };
-            handle_message(  *oid_iterator, mtype, traded_size, traded_price );
-            if (mtype == NotifyMessageType::End)
-                orders_.erase( oid_iterator );
-        }; 
-        virtual void markets_state_changed(Transport & transport) = 0 ; //market state has changed. determine next action time if needed
-        //method to make time go faster:
-        TimeType next_action_time_and_type() { return next_action_time_ ; }  ; 
-        //actions in the market:
-
-    };
-
-    struct Transport {
-        virtual void place_order( const Agent::OrderData & od ) = 0 ;
-        virtual void cancel( const OrderIDType & oid ) = 0 ;
-    };
-
-    struct PriceMakerAroundWM : public Agent { 
-        //these agents decide on the price based on normal distribution around wm.
-        //cancel time is also coming from a distribution. 
-
-        using CancellationTime = struct { 
-            const TimeType t_cancel_; 
-            const OrderIDType order_id_;
-        } ; 
-
-        using CancellationTimes = boost::multi_index::multi_index_container<
-            CancellationTime, 
-            boost::multi_index::indexed_by< 
-                boost::multi_index::ordered_non_unique< 
-                    boost::multi_index::member< CancellationTime, const TimeType , &CancellationTime::t_cancel_ >  
-                >,
-                boost::multi_index::hashed_unique< 
-                    boost::multi_index::member< CancellationTime, const OrderIDType , &CancellationTime::order_id_ >  , 
-                    boost::hash<OrderIDType>
-                >
-            >
-        >;
-
-        int local_id_counter_;
-        boost::random::mt19937 & mt_;
-        const boost::random::exponential_distribution<> placement_, cancellation_;
-        mutable boost::random::normal_distribution<double> order_price_;
-        const boost::random::poisson_distribution<SizeType, double> order_size_;
-        const size_t n_orders_ ;
-        TimeType placement_time_ ; 
-
-        CancellationTimes cancellation_times_ ; 
-
-        PriceMakerAroundWM( const MarketState & market,
-                boost::random::mt19937 & mt, 
-                const double placement_lambda, 
-                const double cancellation_lambda, 
-                double order_price_mean, //how far from wm the price is 
-                double order_price_std,
-                double order_size_mean,
-                const size_t n_orders
-                ) : Agent(market), 
-                local_id_counter_(0),
-                mt_(mt),
-                placement_(placement_lambda), 
-                cancellation_(cancellation_lambda) , 
-                order_price_(order_price_mean, order_price_std ),
-                order_size_(order_size_mean),
-                n_orders_(n_orders)
-        {
-            next_action_time_ = safe_round<TimeType>(1e9*placement_(mt_));
-            placement_time_ = next_action_time_; 
-        }
-
-        virtual void markets_state_changed(Transport & transport) {
-            //market state has changed. determine next action time if needed
-            if (market_.time_ >= placement_time_ and orders_.size() + unacked_orders_.size() < n_orders_ and not std::isnan( market_.wm_ ) ) {
-                const double d_price = order_price_( mt_ );
-                OrderData od( local_id_counter_++, safe_round<PriceType>( d_price + market_.wm_ ) , 1 + order_size_(mt_) , 2, (d_price > 0) ? Side::Offer : Side::Bid ); 
-                unacked_orders_.emplace( std::move( od ) );
-                transport.place_order( od );
-                placement_time_ += safe_round<TimeType>(1e9*placement_(mt_));
-            }
-            auto & index = cancellation_times_.get<0>() ; 
-            while( not index.empty() and market_.time_ >= index.begin()->t_cancel_ ) { 
-                transport.cancel( index.begin()->order_id_ );
-                index.erase(index.begin());
-            }
-            if (index.empty())
-                next_action_time_ = placement_time_ ;
-            else 
-                next_action_time_ = std::min(placement_time_, index.begin()->t_cancel_) ;
-        }
-
-        virtual void handle_message( const OrderData & order_data, const NotifyMessageType mtype, 
-                const SizeType , const PriceType  ) {
-            switch (mtype) {
-                case NotifyMessageType::Ack : 
-                    { 
-                        //setup cancellation time
-                        TimeType cancellation_time =  market_.time_ + cancellation_( mt_ );
-                        cancellation_times_.emplace( cancellation_time, order_data.order_id_ );
-                        next_action_time_ = std::min( next_action_time_, cancellation_time );
-                        break;
-                    } 
-                case NotifyMessageType::Cancel : 
-                case NotifyMessageType::End : 
-                    {
-                        cancellation_times_.get<1>().erase( order_data.order_id_ );
-                        break;
-                    }
-                case NotifyMessageType::Trade : 
-                    break;
-            }
-        }
-    };
 
 
     struct ClientType { 
@@ -627,7 +337,7 @@ namespace SDB {
                 state.next_action_time_ = std::numeric_limits<TimeType>::max();
                 handler.by_time_.update( ptr.handle_ );
                 if (state.action_ == 0) {//place new order
-                    eng.add_simulation_order( state.client_id_, state.price_, state.size_,
+                    eng.add_simulation_order( state.client_id_, 0, state.price_, state.size_,
                             state.show_, state.side_, false, handler);
                 } else if (state.action_ == 1) { //cancel
                     eng.cancel_order( state.active_order_id_, handler );
@@ -873,12 +583,12 @@ namespace SDB {
                                                 std::to_string(kt->event_time_) + " vs " + 
                                                 std::to_string( msgs_it->event_time_ ) );
                                     if (kt->mtype_== NotifyMessageType::Ack and kt->oid_ != msgs_it->oid_ )
-                                        eng.add_replay_order(kt->oid_, get_cid(*kt,default_cid_market), kt->price_, kt->size_, kt->side_, false, handler);
+                                        eng.add_replay_order(kt->oid_, get_cid(*kt,default_cid_market), 0, kt->price_, kt->size_, kt->side_, false, handler);
                                 }
-                                eng.add_replay_order(msgs_it->oid_, get_cid(*msgs_it,default_cid_market), msgs_it->price_, msgs_it->size_, msgs_it->side_, false, handler);
+                                eng.add_replay_order(msgs_it->oid_, get_cid(*msgs_it,default_cid_market), 0, msgs_it->price_, msgs_it->size_, msgs_it->side_, false, handler);
                                 for (auto kt = msgs_it + 1; kt  < same_time_end_it ; ++kt ) {
                                     if (kt->mtype_== NotifyMessageType::Ack and kt->oid_ == msgs_it->oid_ )
-                                        eng.add_replay_order(kt->oid_, get_cid(*kt,default_cid_market), kt->price_, kt->size_, kt->side_, false, handler);
+                                        eng.add_replay_order(kt->oid_, get_cid(*kt,default_cid_market), 0, kt->price_, kt->size_, kt->side_, false, handler);
                                 }
                                 handler.log(eng);
                                 msgs_it = same_time_end_it;
@@ -906,14 +616,14 @@ namespace SDB {
                 } else { 
                     PriceType algo_price_t = safe_round<PriceType>( algo_prices[time_index] );
                     if (time_index==0) {
-                        eng.add_replay_order( oid , cid_shadow, algo_price_t, 1, side, true, handler );
+                        eng.add_replay_order( oid , cid_shadow, 0, algo_price_t, 1, side, true, handler );
                     } else if (
                             std::fabs( algo_prices[time_index] - algo_price ) > 1e-7 or 
                             handler.simulated_order_status_ == OrderStatus::End ) {
                         if (handler.simulated_order_status_ != OrderStatus::End) 
                             eng.cancel_order( oid, handler ); //cancel if not already gone.
                         increment(oid, ids_not_to_be_used_by_simulator);
-                        eng.add_replay_order( oid , cid_shadow, algo_price_t, 1, side, true, handler );
+                        eng.add_replay_order( oid , cid_shadow, 0, algo_price_t, 1, side, true, handler );
                     }
                     algo_price = algo_prices[time_index]; 
                 }

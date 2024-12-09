@@ -85,7 +85,7 @@ int main(const int argc,const char ** argv) {
             lastsec = secs;
         }
         if (state.action_ == 0) {//place new order
-            eng.add_simulation_order( state.client_id_, state.price_, state.size_,
+            eng.add_simulation_order( state.client_id_,0,  state.price_, state.size_,
                     state.show_, state.side_, false, handler);
         } else if (state.action_ == 1) { //cancel
             eng.cancel_order( state.active_order_id_, handler );

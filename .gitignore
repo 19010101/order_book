@@ -4,3 +4,5 @@ release
 *~
 .*.swp
 venv
+.idea
+cmake-build-debug

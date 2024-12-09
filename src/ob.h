@@ -54,6 +54,7 @@ namespace SDB {
     using OrderIDType = std::array<std::uint8_t, 12>  ; 
     using TimeType = int64_t ; 
     using ClientIDType = uint32_t;
+    using LocalOrderIDType = uint32_t;
     using PriceType = int16_t;
     using SizeType = uint16_t;
 
@@ -133,6 +134,7 @@ namespace SDB{
         OrderIDType order_id_ ; 
         TimeType creation_time_ ; 
         ClientIDType client_id_ ;
+        LocalOrderIDType local_id_ ;
         PriceType price_ ; 
         SizeType total_size_ ; 
         SizeType show_ ; 
@@ -144,11 +146,12 @@ namespace SDB{
 
 
         template <INotifier N>
-            void reset( TimeType t, ClientIDType cid, PriceType p, SizeType s, SizeType show, Side side, bool is_shadow, N & notify ) 
+            void reset( TimeType t, ClientIDType cid, LocalOrderIDType local_id, PriceType p, SizeType s, SizeType show, Side side, bool is_shadow, N & notify ) 
             {
                 order_id_.fill( std::numeric_limits<std::uint8_t>::max() ) ;
                 creation_time_ = t ;
                 client_id_ = cid;
+                local_id_ = local_id;
                 price_ = p;
                 total_size_ = s ;
                 show_ = show;
@@ -160,11 +163,12 @@ namespace SDB{
                 replenish(notify, t);
             }
         template <INotifier N>
-            void reset( const OrderIDType & oid, TimeType t, ClientIDType cid, PriceType p, SizeType s, SizeType show, Side side, bool is_shadow, N & notify ) 
+            void reset( const OrderIDType & oid, TimeType t, ClientIDType cid,LocalOrderIDType local_id, PriceType p, SizeType s, SizeType show, Side side, bool is_shadow, N & notify ) 
             {
                 order_id_ = oid;
                 creation_time_ = t ;
                 client_id_ = cid;
+                local_id_ = local_id;
                 price_ = p;
                 total_size_ = s ;
                 show_ = show;
@@ -215,7 +219,7 @@ namespace SDB{
 
         
         void clear() { 
-            reset(-1, -1, -1,0,0,Side::Offer, false, NOOPNotify::instance());
+            reset(-1, -1, -1,0,0,0,Side::Offer, false, NOOPNotify::instance());
         }
 
         static bool reduce_size( const bool shadow, const bool other_side_shadow ) { 
@@ -410,20 +414,20 @@ namespace SDB {
     template <INotifier N> 
         Order & get_new_order(
                 MemoryManager<Order> & mem, 
-                OrderIDType oid, TimeType t, ClientIDType cid, PriceType p, SizeType s, SizeType show, Side side, bool is_shadow,
+                OrderIDType oid, TimeType t, ClientIDType cid, LocalOrderIDType lid, PriceType p, SizeType s, SizeType show, Side side, bool is_shadow,
                 N & notify
                 ) {
             Order & o = mem.get_unused();
-            o.reset(oid, t, cid, p, s, show, side, is_shadow, notify);
+            o.reset(oid, t, cid, lid, p, s, show, side, is_shadow, notify);
             //notify.log( NotifyMessageType::Ack , o, t, 0, 0 );
             return o;
         }
 
     inline Order & get_new_order(
             MemoryManager<Order> & mem, 
-            OrderIDType oid, TimeType t, ClientIDType cid, PriceType p, SizeType s, SizeType show, Side side, bool is_shadow
+            OrderIDType oid, TimeType t, ClientIDType cid, LocalOrderIDType lid, PriceType p, SizeType s, SizeType show, Side side, bool is_shadow
             ) {
-        return get_new_order(mem, oid, t, cid, p, s, show, side, is_shadow, NOOPNotify::instance() );
+        return get_new_order(mem, oid, t, cid, lid, p, s, show, side, is_shadow, NOOPNotify::instance() );
     }
     struct MatchingEngine { 
         OrderIDType next_order_id_ ; 
@@ -469,8 +473,9 @@ namespace SDB {
         }
         private: 
         template <INotifier N> 
-            void add_order(const OrderIDType oid, const ClientIDType client_id ,const PriceType price, const SizeType size, const SizeType show, const Side side, const bool is_shadow, N & notify) { 
-                Order & new_order = get_new_order( mem_,oid, time_, client_id, price, size, show, side, is_shadow, notify);
+            void add_order(const OrderIDType oid, const ClientIDType client_id, const LocalOrderIDType lid, 
+                    const PriceType price, const SizeType size, const SizeType show, const Side side, const bool is_shadow, N & notify) { 
+                Order & new_order = get_new_order( mem_,oid, time_, client_id, lid, price, size, show, side, is_shadow, notify);
                 auto & all_orders_other_side = get_book( get_other_side(side) );
                 while (not all_orders_other_side.empty()) { 
                     const auto top_of_other_side_iter = all_orders_other_side.begin(); 
@@ -492,15 +497,15 @@ namespace SDB {
         public:
 
         template <INotifier N> 
-            void add_simulation_order( const ClientIDType client_id, const PriceType price, const SizeType size, const SizeType show, const Side side, const bool is_shadow, N & notify) { 
+            void add_simulation_order( const ClientIDType client_id, const LocalOrderIDType lid, const PriceType price, const SizeType size, const SizeType show, const Side side, const bool is_shadow, N & notify) { 
                 //this method is for simulation. 
-                add_order( next_order_id_, client_id, price, size, show, side, is_shadow, notify);
+                add_order( next_order_id_, client_id, lid, price, size, show, side, is_shadow, notify);
                 increment( next_order_id_);
             }
         template <INotifier N> 
-            void add_replay_order( const OrderIDType oid, const ClientIDType client_id, const PriceType price, const SizeType size, const Side side, const bool is_shadow, N & notify) { 
+            void add_replay_order( const OrderIDType oid, const ClientIDType client_id, const LocalOrderIDType lid, const PriceType price, const SizeType size, const Side side, const bool is_shadow, N & notify) { 
                 //this method is for simulation. 
-                add_order( oid, client_id, price, size, size, side, is_shadow, notify);
+                add_order( oid, client_id, lid, price, size, size, side, is_shadow, notify);
             }
         template <INotifier N> 
             void cancel_order( const OrderIDType oid, N & notify ) { 
@@ -579,4 +584,26 @@ namespace SDB {
                 return double(bid_prices[0]*ask_sizes[0] + ask_prices[0]*bid_sizes[0])/double(tot);
         }
     };
+    template<typename T> 
+        bool safe_round( const double & d , T & out ) { 
+            const auto ll = std::llround( d );
+            out = T( ll );
+            return 
+                d  <= std::numeric_limits<decltype(ll)>::max() and 
+                d  >= std::numeric_limits<decltype(ll)>::min() and 
+                ll <= std::numeric_limits<T>::max() and 
+                ll >= std::numeric_limits<T>::min() ;
+        }
+        
+    template<typename T> 
+        T safe_round( const double & d ) { 
+            T t;
+            if ( std::isnan( d ) ) 
+                throw std::runtime_error(std::string("Cannot convert NaN to ") + typeid(T).name() );
+            if ( not safe_round(d,t) ) throw std::runtime_error(
+                    "cannot convert " + std::to_string(d) + " to " + typeid(T).name() );
+            return t;
+        }
+
+
 }
