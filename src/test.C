@@ -1192,19 +1192,8 @@ TEST_CASE( "price maker delayed sim" , "[AgentX]" ) {
                          static_cast<double>(tot);
             //market.wm_ = 0.;
         }
-        char msg[1024];
-        std::snprintf(msg, 1024,
-            "%15.9f %4db@%-3d %4db@%-3d %4db@%-3d wm:%4.2f %4da@%-3d %4da@%-3d %4da@%-3d",
-            static_cast<double>(market.time_)*1e-9,
-            market.bid_sizes_[2], market.bid_prices_[2],
-            market.bid_sizes_[1], market.bid_prices_[1],
-            market.bid_sizes_[0], market.bid_prices_[0],
-            market.wm_,
-            market.ask_sizes_[0], market.ask_prices_[0],
-            market.ask_sizes_[1], market.ask_prices_[1],
-            market.ask_sizes_[2], market.ask_prices_[2]
-            );
-        std::cerr << "XXXX: "<< msg << '\n';
+        //std::cerr << "XXXX: " << market << '\n';
+
     }
 
     for (size_t i = 0; i < n_agents; ++i ) {
@@ -1213,12 +1202,10 @@ TEST_CASE( "price maker delayed sim" , "[AgentX]" ) {
         std::sort(vec.begin(), vec.end());
         double sum = 0, count = 0;
         for (const auto &[fst, snd]: vec) {
-            //std::cerr << "POS " << i << " " << fst << " " << snd << '\n';
             sum += static_cast<double>(fst) * static_cast<double>(snd);
             count += static_cast<double>(snd);
         }
-        std::cerr << "POS " << i << " mean:" << sum / count << '\n';
-
+        SPDLOG_TRACE("POS {}, mean: {}",i, sum / count);
     }
 }
 TEST_CASE( "symmetry" , "[AgentX]" ) {
@@ -1395,6 +1382,7 @@ TEST_CASE( "full simulator" , "[Agent]" ) {
 }
 
 TEST_CASE( "slow buyers and fast sellers" , "[Agent]" ) {
+    //market should rally.
     using namespace SDB;
 
     spdlog::set_level(spdlog::level::info);
@@ -1469,6 +1457,7 @@ TEST_CASE( "slow buyers and fast sellers" , "[Agent]" ) {
 }
 
 TEST_CASE( "large order buyers and small order sellers" , "[Agent]" ) {
+    //market should rally
     using namespace SDB;
 
     spdlog::set_level(spdlog::level::info);
@@ -1530,6 +1519,92 @@ TEST_CASE( "large order buyers and small order sellers" , "[Agent]" ) {
             REQUIRE( sum_orders > 0 );
             //SPDLOG_INFO("client {}, mean price {}, total orders {}", i, sum_orders_by_price/sum_orders, sum_orders);
         }
+        wm_sum += market.wm_;
+        wm_sum_sq += market.wm_ * market.wm_;
+        n_wm += 1;
+        mean = wm_sum / n_wm;
+        stdev = sqrt( wm_sum_sq / n_wm  - mean * mean );
+        SPDLOG_INFO( "wm {:7.2f} after {}. mean {:5.2f} ± {:5.2f} after {:4d} tries ", market.wm_, dt,
+            mean, stdev , n_wm );
+    }
+    REQUIRE( mean > 0 ); //expect market to rally.
+}
+
+TEST_CASE( "large order buyers and small order sellers, with momentum traders" , "[Agent]" ) {
+    using namespace SDB;
+    // if momentum traders place large orders, momentum will push up because triggers are
+    //   large order buyers pushing the price up. If the momentum traders place small
+    //   orders, then they will not cause further momentum. Instead, they will just
+    //   deplete small orders,  which are sellers, who will come back and push the
+    //   market down. Interesting dynamics.
+    spdlog::set_level(spdlog::level::info);
+    spdlog::set_pattern("[%L] [%s:%#] [f:%!] %v");
+
+    boost::random::mt19937 mt(0);
+
+    double wm_sum  =0 ;
+    double wm_sum_sq = 0;
+    int n_wm = 0;
+    double mean, stdev;
+    for (int k = 0 ; k < 10; ++k) {
+        std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+        constexpr size_t n_agents = 10;
+        MarketState market{0, 0.0, {}, {}, {}, {}};
+        std::vector<PriceMakerAroundWM> price_makers;
+        price_makers.reserve(n_agents);
+        for (size_t i = 0; i < n_agents; ++i ) {
+            const bool large_orders = i%2 == 1;
+            if (large_orders)
+                price_makers.emplace_back(
+                    i, market, mt,
+                    1., 1. ,
+                    -.5, 1., 10., 0.01,
+                    10);
+            else
+                price_makers.emplace_back(
+                    i, market, mt,
+                    1., 1.,
+                    .5, 1., 2., 0.01,
+                    10);
+
+        }
+        std::vector<TrendFollowerAgent> trend_followers;
+        trend_followers.reserve(n_agents);
+        for (size_t i = 0; i < n_agents; ++i ) trend_followers.emplace_back( price_makers.size()+i, market, 1,  .5 );
+        for (auto & tf: trend_followers )
+            tf.disabled_ = false;
+        MatchingEngine eng ;
+        market.bid_prices_[0] = 1;
+        market.ask_prices_[0] = -1;
+        market.bid_sizes_[0] = 10;
+        market.ask_sizes_[0] = 10;
+        std::ofstream out(std::format("out_{:03d}.txt", k));
+        const auto price_counts = simulate( mt, market, price_makers,  trend_followers, eng , NOOPNotify::instance(), 0.0, 60*60*1e9, &out);
+        out.close();
+        std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
+        std::chrono::duration<double, std::ratio<1>> dt = t1 - t0;
+        for (ClientIDType i = 0; i < price_makers.size() + trend_followers.size(); ++i ) {
+            auto it = price_counts.find( i );
+            if (it == price_counts.end() ) {
+                SPDLOG_ERROR("price_counts could not find strategy {} at simulation {}", i, k);
+                continue;
+            }
+            //REQUIRE( it != price_counts.end() );
+            const auto & map = it->second;
+            std::vector<std::pair<PriceType, int> > vec( map.begin(), map.end() );
+            std::sort( vec.begin(), vec.end() );
+            int sum_orders = 0;
+            for (const auto & [price, count]: vec) {
+                sum_orders += count;
+            }
+            REQUIRE( sum_orders > 0 );
+        }
+        /*
+        for (const auto & tf : trend_followers )
+            SPDLOG_INFO("client {}, mean bids/total {}, bids {}, asks {}",
+                tf.client_id_, tf.bid_count_/static_cast<double>(tf.bid_count_+tf.ask_count_),
+                tf.bid_count_, tf.ask_count_);
+                */
         wm_sum += market.wm_;
         wm_sum_sq += market.wm_ * market.wm_;
         n_wm += 1;

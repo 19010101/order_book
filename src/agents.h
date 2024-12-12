@@ -27,6 +27,37 @@ namespace SDB {
         std::array<SizeType, 4>  ask_sizes_;
     };
 
+    std::ostream & operator<<(std::ostream & out, const MarketState & market ) {
+        out << std::right << std::fixed << std::setw(15)<<  std::setprecision(9) << static_cast<double>(market.time_) * 1e-9
+                << ' '
+                << std::right  << std::setw(3)<<  market.bid_sizes_[2]
+                << "b@"
+                << std::left << std::setw(3)<<  market.bid_prices_[2]
+                << ' '
+                << std::right  << std::setw(3)<<  market.bid_sizes_[1]
+                << "b@"
+                << std::left << std::setw(3)<<  market.bid_prices_[1]
+                << ' '
+                << std::right  << std::setw(3)<<  market.bid_sizes_[0]
+                << "b@"
+                << std::left << std::setw(3)<<  market.bid_prices_[0]
+                << "  wm:"
+                << std::fixed << std::setw(5)<<  std::setprecision(2) << market.wm_
+                << ' '
+                << std::right  << std::setw(3)<<  market.ask_sizes_[0]
+                << "a@"
+                << std::left << std::setw(3)<<  market.ask_prices_[0]
+                << ' '
+                << std::right  << std::setw(3)<<  market.ask_sizes_[1]
+                << "a@"
+                << std::left << std::setw(3)<<  market.ask_prices_[1]
+                << ' '
+                << std::right  << std::setw(3)<<  market.ask_sizes_[2]
+                << "a@"
+                << std::left << std::setw(3)<<  market.ask_prices_[2] ;
+        return out;
+    }
+
     struct OrderData { 
         LocalOrderIDType local_id_;
         OrderIDType order_id_ ; 
@@ -381,6 +412,8 @@ namespace SDB {
         LocalOrderIDType local_id_counter_;
         EMA ema_ ;
         const double spread_ ;
+        bool disabled_ ;
+        size_t bid_count_ , ask_count_ ;
 
         TrendFollowerAgent(
             const ClientIDType client_id,
@@ -388,7 +421,9 @@ namespace SDB {
             const double T, const double spread) :
                 Agent<TrendFollowerAgent>(client_id, market),
                 local_id_counter_(0),
-                ema_(T), spread_(spread) { }
+                ema_(T), spread_(spread),
+                disabled_(false),
+                 bid_count_(0), ask_count_(0) { }
         template <TransportConcept Transport>
             void handle_market_state_changed(Transport & transport) {
                 if (std::isnan(market_.wm_)) return;
@@ -405,6 +440,10 @@ namespace SDB {
                     side = Side::Offer;
                 } else
                     return;
+                //collect stats and return
+                if (side==Side::Bid) ++bid_count_ ;
+                else ++ask_count_ ;
+                if (disabled_) return;
                 //do we have an order in this side and price? If so, don't do anything.
                 for (auto & o : unacked_orders_)
                     if (o.price_==price and o.side_==side) return;
@@ -419,7 +458,7 @@ namespace SDB {
                 if (found) return;
                 const LocalOrderIDType local_order_id = local_id_counter_++;
                 auto [fst, snd] = unacked_orders_.emplace(
-                    local_order_id, price, 1, 1, side);
+                    local_order_id, price, 10, 1, side);
                 if (not snd)
                     throw std::runtime_error(
                         "Problem placing un-acked order in map: " + std::to_string(local_order_id));
@@ -611,9 +650,8 @@ namespace SDB {
                 market.bid_prices_, market.bid_sizes_,
                 market.ask_prices_, market.ask_sizes_
             );
-            double wm = std::numeric_limits<double>::quiet_NaN();
             if (market.bid_sizes_[0] != 0 and market.ask_sizes_[0] != 0)
-                wm = market.wm_ = static_cast<double>(market.bid_prices_[0] * market.ask_sizes_[0] +
+                market.wm_ = static_cast<double>(market.bid_prices_[0] * market.ask_sizes_[0] +
                                                  market.ask_prices_[0] * market.bid_sizes_[0]) /
                              static_cast<double>(market.bid_sizes_[0] + market.ask_sizes_[0]);
 
@@ -646,35 +684,7 @@ namespace SDB {
             );
             */
             if (outptr != nullptr)
-                *outptr
-                << std::right << std::fixed << std::setw(15)<<  std::setprecision(9) << static_cast<double>(market.time_) * 1e-9
-                << ' '
-                << std::right  << std::setw(3)<<  market.bid_sizes_[2]
-                << "b@"
-                << std::left << std::setw(3)<<  market.bid_prices_[2]
-                << ' '
-                << std::right  << std::setw(3)<<  market.bid_sizes_[1]
-                << "b@"
-                << std::left << std::setw(3)<<  market.bid_prices_[1]
-                << ' '
-                << std::right  << std::setw(3)<<  market.bid_sizes_[0]
-                << "b@"
-                << std::left << std::setw(3)<<  market.bid_prices_[0]
-                << "  wm:"
-                << std::fixed << std::setw(5)<<  std::setprecision(2) << wm
-                << ' '
-                << std::right  << std::setw(3)<<  market.ask_sizes_[0]
-                << "a@"
-                << std::left << std::setw(3)<<  market.ask_prices_[0]
-                << ' '
-                << std::right  << std::setw(3)<<  market.ask_sizes_[1]
-                << "a@"
-                << std::left << std::setw(3)<<  market.ask_prices_[1]
-                << ' '
-                << std::right  << std::setw(3)<<  market.ask_sizes_[2]
-                << "a@"
-                << std::left << std::setw(3)<<  market.ask_prices_[2]
-                << '\n';
+                *outptr << market << '\n';
         }
         return transport.price_counts;
     }
