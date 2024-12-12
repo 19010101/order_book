@@ -260,6 +260,7 @@ namespace SDB {
                 return *ptr_it;
             }
 
+            void error( const OrderIDType & , const std::string & ) const {}
             void log( const MatchingEngine & eng ) { logger_.log(eng); }
 
             void log( const NotifyMessageType msg_type , const Order & order, const TimeType notif_time, 
@@ -482,7 +483,9 @@ namespace SDB {
             //INotifier
             void log( const NotifyMessageType mtype , const Order & o, const TimeType t, const SizeType trade_size = 0, const PriceType trade_price = 0) { 
                 if (out_ != nullptr)
-                    *out_ << t << ' ' << mtype << " " << std::to_string(o) << " ts:" << trade_size << " tp:"  << trade_price << '\n';
+                    //*out_ << t << ' ' << mtype << " " << std::to_string(o) << " ts:" << trade_size << " tp:"  << trade_price << '\n';
+                    //SPDLOG_TRACE("{} {} {} ts:{} tp:{}", t, mtype, std::to_string(o), trade_size, trade_price);
+                    SPDLOG_TRACE("{} {} {:xspn} ts:{} tp:{}", t, mtype, spdlog::to_hex(o.order_id_), trade_size, trade_price);
                 if (record_msgs_) {
                     if (record_shadow_ or not o.is_shadow_)
                         emplace_back( msgs_, t, o.order_id_, o.price_, trade_price, o.shown_size_, trade_size, mtype, o.side_ , o.client_id_ ) ;
@@ -512,6 +515,9 @@ namespace SDB {
                 else
                     //different time, so push back
                     wm_.emplace_back( eng.time_,  eng.wm() );  
+            }
+            static void error( const OrderIDType & oid, const std::string & msg) {
+                SPDLOG_ERROR("oid: 0x{:xspn} msg: {:s}", spdlog::to_hex(oid), msg);
             }
 
             //mem management
@@ -681,6 +687,7 @@ namespace SDB {
                     prev_wm_ = eng.wm(); 
                     prev_time_ = eng.time_ ; 
                 }
+            void error(const OrderIDType &, const std::string &) {}
 
         };
 

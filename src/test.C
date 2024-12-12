@@ -5,8 +5,12 @@
 #include "utils.h"
 #include <boost/random/bernoulli_distribution.hpp>
 
+#define CATCH_CONFIG_NO_STDERR_CAPTURE
 #define CATCH_CONFIG_MAIN
 #include <catch2/catch_all.hpp>
+
+#include <chrono>
+#include <fmt/chrono.h>
 
 TEST_CASE( "test ordering", "[Level]" ) {
     using namespace SDB;
@@ -266,80 +270,112 @@ TEST_CASE( "add order create new level", "[MatchingEngine]" ) {
     using namespace SDB;
     std::array<PriceType, 5> bid_prices, ask_prices;
     std::array<SizeType, 5> bid_sizes, ask_sizes;
-    {
-        MatchingEngine eng;
-        for (int dp  = 0; dp < 5; ++dp ) {
-            eng.add_simulation_order( 0, 0, 100 - dp ,  10 + dp   , 2, Side::Bid, false, NOOPNotify::instance() );
-            eng.add_simulation_order( 0, 0, 100 - dp ,  10 + dp*2 , 3, Side::Bid, false, NOOPNotify::instance() );
+    MatchingEngine eng;
+    for (int dp = 0; dp < 5; ++dp) {
+        eng.add_simulation_order(0, 0, 100 - dp, 10 + dp, 2, Side::Bid, false, NOOPNotify::instance());
+        eng.add_simulation_order(0, 0, 100 - dp, 10 + dp * 2, 3, Side::Bid, false, NOOPNotify::instance());
 
-            eng.add_simulation_order( 0, 0, 101 + dp ,  10 + dp   , 4, Side::Offer, false, NOOPNotify::instance() );
-            eng.add_simulation_order( 0, 0, 101 + dp ,  10 + dp*2 , 5, Side::Offer, false, NOOPNotify::instance() );
-
-        }
-        //agressive order. first order will replenish back to 4, second will be left to 1:
-        eng.add_simulation_order( 0, 0, 100  ,  100   , 7, Side::Offer, false, NOOPNotify::instance() ); //agressive sell
-        eng.level2( bid_prices, bid_sizes, ask_prices, ask_sizes);
-        //top level bid is gone:
-        CHECK( 99   == bid_prices[0] ); CHECK( 5  == bid_sizes[0] );
-        CHECK( 98   == bid_prices[1] ); CHECK( 5  == bid_sizes[1] );
-        CHECK( 97   == bid_prices[2] ); CHECK( 5  == bid_sizes[2] );
-        CHECK( 96   == bid_prices[3] ); CHECK( 5  == bid_sizes[3] );
-        CHECK( 0    == bid_prices[4] ); CHECK( 0  == bid_sizes[4] );
-
-        //new top level offer is our agressive order:
-        CHECK( 100  == ask_prices[0] ); CHECK( 1  == ask_sizes[0] );
-        //remainder is same:
-        CHECK( 101  == ask_prices[1] ); CHECK( 9  == ask_sizes[1] );
-        CHECK( 102  == ask_prices[2] ); CHECK( 9  == ask_sizes[2] );
-        CHECK( 103  == ask_prices[3] ); CHECK( 9  == ask_sizes[3] );
-        CHECK( 104  == ask_prices[4] ); CHECK( 9  == ask_sizes[4] );
+        eng.add_simulation_order(0, 0, 101 + dp, 10 + dp, 4, Side::Offer, false, NOOPNotify::instance());
+        eng.add_simulation_order(0, 0, 101 + dp, 10 + dp * 2, 5, Side::Offer, false, NOOPNotify::instance());
     }
+    //agressive order. first order will replenish back to 4, second will be left to 1:
+    eng.add_simulation_order(0, 0, 100, 100, 7, Side::Offer, false, NOOPNotify::instance()); //agressive sell
+    eng.level2(bid_prices, bid_sizes, ask_prices, ask_sizes);
+    //top level bid is gone:
+    CHECK(99 == bid_prices[0]);
+    CHECK(5 == bid_sizes[0]);
+    CHECK(98 == bid_prices[1]);
+    CHECK(5 == bid_sizes[1]);
+    CHECK(97 == bid_prices[2]);
+    CHECK(5 == bid_sizes[2]);
+    CHECK(96 == bid_prices[3]);
+    CHECK(5 == bid_sizes[3]);
+    CHECK(0 == bid_prices[4]);
+    CHECK(0 == bid_sizes[4]);
+
+    //new top level offer is our agressive order:
+    CHECK(100 == ask_prices[0]);
+    CHECK(1 == ask_sizes[0]);
+    //remainder is same:
+    CHECK(101 == ask_prices[1]);
+    CHECK(9 == ask_sizes[1]);
+    CHECK(102 == ask_prices[2]);
+    CHECK(9 == ask_sizes[2]);
+    CHECK(103 == ask_prices[3]);
+    CHECK(9 == ask_sizes[3]);
+    CHECK(104 == ask_prices[4]);
+    CHECK(9 == ask_sizes[4]);
 }
 
 TEST_CASE( "sweep stack", "[MatchingEngine]" ) {
     using namespace SDB;
     std::array<PriceType, 5> bid_prices, ask_prices;
     std::array<SizeType, 5> bid_sizes, ask_sizes;
-    {
-        MatchingEngine eng;
-        for (int dp  = 0; dp < 5; ++dp ) {
-            eng.add_simulation_order( 0, 0, 100 - dp ,  10 + dp   , 2, Side::Bid, false, NOOPNotify::instance() );
-            eng.add_simulation_order( 0, 0, 100 - dp ,  10 + dp*2 , 3, Side::Bid, false, NOOPNotify::instance() );
+    MatchingEngine eng;
+    for (int dp = 0; dp < 5; ++dp) {
+        eng.add_simulation_order(0, 0, 100 - dp, 10 + dp, 2, Side::Bid, false, NOOPNotify::instance());
+        eng.add_simulation_order(0, 0, 100 - dp, 10 + dp * 2, 3, Side::Bid, false, NOOPNotify::instance());
 
-            eng.add_simulation_order( 0, 0, 101 + dp ,  10 + dp   , 4, Side::Offer, false, NOOPNotify::instance() );
-            eng.add_simulation_order( 0, 0, 101 + dp ,  10 + dp*2 , 5, Side::Offer, false, NOOPNotify::instance() );
-
-        }
-        //agressive order. first order will replenish back to 4, second will be left to 1:
-        eng.add_simulation_order( 0, 0, 99  ,  100   , 7, Side::Offer, false, NOOPNotify::instance() ); //agressive sell
-        eng.level2( bid_prices, bid_sizes, ask_prices, ask_sizes);
-        //top two levels of bids are gone:
-        CHECK( 98   == bid_prices[0] ); CHECK( 5  == bid_sizes[0] );
-        CHECK( 97   == bid_prices[1] ); CHECK( 5  == bid_sizes[1] );
-        CHECK( 96   == bid_prices[2] ); CHECK( 5  == bid_sizes[2] );
-        CHECK( 0    == bid_prices[3] ); CHECK( 0  == bid_sizes[3] );
-        CHECK( 0    == bid_prices[4] ); CHECK( 0  == bid_sizes[4] );
-
-        //new top level offer is our agressive order:
-        CHECK( 99   == ask_prices[0] ); CHECK( 6  == ask_sizes[0] );
-        //remainder is same:
-        CHECK( 101  == ask_prices[1] ); CHECK( 9  == ask_sizes[1] );
-        CHECK( 102  == ask_prices[2] ); CHECK( 9  == ask_sizes[2] );
-        CHECK( 103  == ask_prices[3] ); CHECK( 9  == ask_sizes[3] );
-        CHECK( 104  == ask_prices[4] ); CHECK( 9  == ask_sizes[4] );
+        eng.add_simulation_order(0, 0, 101 + dp, 10 + dp, 4, Side::Offer, false, NOOPNotify::instance());
+        eng.add_simulation_order(0, 0, 101 + dp, 10 + dp * 2, 5, Side::Offer, false, NOOPNotify::instance());
     }
+    //agressive order. first order will replenish back to 4, second will be left to 1:
+    eng.add_simulation_order(0, 0, 99, 100, 7, Side::Offer, false, NOOPNotify::instance()); //agressive sell
+    eng.level2(bid_prices, bid_sizes, ask_prices, ask_sizes);
+    //top two levels of bids are gone:
+    CHECK(98 == bid_prices[0]);
+    CHECK(5 == bid_sizes[0]);
+    CHECK(97 == bid_prices[1]);
+    CHECK(5 == bid_sizes[1]);
+    CHECK(96 == bid_prices[2]);
+    CHECK(5 == bid_sizes[2]);
+    CHECK(0 == bid_prices[3]);
+    CHECK(0 == bid_sizes[3]);
+    CHECK(0 == bid_prices[4]);
+    CHECK(0 == bid_sizes[4]);
+
+    //new top level offer is our agressive order:
+    CHECK(99 == ask_prices[0]);
+    CHECK(6 == ask_sizes[0]);
+    //remainder is same:
+    CHECK(101 == ask_prices[1]);
+    CHECK(9 == ask_sizes[1]);
+    CHECK(102 == ask_prices[2]);
+    CHECK(9 == ask_sizes[2]);
+    CHECK(103 == ask_prices[3]);
+    CHECK(9 == ask_sizes[3]);
+    CHECK(104 == ask_prices[4]);
+    CHECK(9 == ask_sizes[4]);
+}
+namespace SDB {
+    struct CaptureErrors {
+        std::vector<std::tuple<OrderIDType,std::string>> errors;
+        void error(const OrderIDType &oid, const std::string &msg) {
+            errors.emplace_back(oid, msg);
+        }
+            void log(const NotifyMessageType , const Order &, const TimeType , const SizeType = 0,
+                     const PriceType = 0) {
+            }
+            void log( const MatchingEngine & ) {
+            }
+
+    };
 }
 TEST_CASE( "cancel order", "[MatchingEngine]" ) {
     using namespace SDB;
     MatchingEngine eng;
-    eng.add_simulation_order( 0, 0, 100,  10, 2, Side::Bid, false, NOOPNotify::instance() );
-    CHECK_THROWS_AS( eng.cancel_order( eng.next_order_id_ ), std::runtime_error) ;
+    CaptureErrors errors;
+    eng.add_simulation_order( 0, 0, 100,  10, 2, Side::Bid, false, errors );
+    eng.cancel_order( eng.next_order_id_ , errors );
+    REQUIRE( errors.errors.size() == 1);
+    CHECK(eng.next_order_id_ == std::get< 0>(errors.errors.front() )) ;
     REQUIRE( not eng.all_bids_.empty() );
     CHECK( not eng.all_bids_.begin()->orders_.empty() );
     OrderIDType oid;
     oid.fill(0);
-    eng.cancel_order( oid );//first order is deleted
+    eng.cancel_order( oid, errors );//first order is deleted
     REQUIRE( eng.all_bids_.empty() );
+    REQUIRE( errors.errors.size() == 1);
 }
 
 namespace SDB {
@@ -349,7 +385,8 @@ namespace SDB {
         void log( const NotifyMessageType mtype , const Order & o, const TimeType t, const SizeType s = 0, const PriceType p = 0) { 
             temp.emplace_back(mtype, o.client_id_, o.order_id_, t, s, p );
         };
-        void log( const MatchingEngine & ) {
+        void error( const OrderIDType, const std::string &) {}
+        static void log( const MatchingEngine & ) {
 
         }
         std::unordered_map<ClientIDType, std::unordered_map<PriceType, SizeType> > aggregate_fills() const { 
@@ -588,7 +625,7 @@ TEST_CASE( "record - simulate_a - no market impact.", "[ClientState]" ) {
     MatchingEngine eng;
     RecordingSimulationHandler<OrderBookEventWithClientID> recorder( &eng.mem_, true, false , false, nullptr );
     ClientState::NotificationHandler handler(recorder,eng);
-    const TimeType TMax = 10 *1e9; 
+    constexpr TimeType TMax = 10 *1e9;
     //const TimeType Sec = 1_000_000_000 ; 
 
     simulate( client_types_and_sizes, eng, handler, TMax );
@@ -693,7 +730,7 @@ TEST_CASE( "simple stats 1", "[StatisticsSimulationHandler]" ) {
     oid.fill(0);
     Order & shadow_order = get_new_order( eng.mem_ , oid, 0, 0, 0, 0, 1, 1, Side::Bid, true, handler );
     Order & dummy_order = get_new_order( eng.mem_ , oid, 0, 0, 0, 0, 1, 1, Side::Bid, false, handler );
-    for (TimeType t = 0; t < TMax ; ++t) { 
+    for (TimeType t = 0; t < TMax ; ++t) {
         eng.set_time( t );
         eng.wm_ += 1e-1*order_price_distribution( mt );
         eng.set_time(t);
@@ -857,7 +894,7 @@ TEST_CASE( "simulate_a single param, run it over and over.", "[StatisticsSimulat
         MatchingEngine eng;
         RecordingSimulationHandler<OrderBookEvent> recorder( &eng.mem_, true, false , false, nullptr );
         ClientState::NotificationHandler handler(recorder,eng);
-        const TimeType TMax = 10 *1e9; 
+        constexpr TimeType TMax = 10 *1e9;
         //const TimeType Sec = 1_000_000_000 ; 
 
         simulate( client_types_and_sizes, eng, handler, TMax );
@@ -894,14 +931,14 @@ TEST_CASE( "simulate_a single param, run it over and over.", "[StatisticsSimulat
     }
 
 
-    const int half = 20;
-    const double max_adj = 2;
-    
+    constexpr int half = 20;
+
     for (int i = 0; i < 1+2*half; ++i)  {
+        constexpr double max_adj = 2;
         MatchingEngine eng2;
         StatisticsSimulationHandler<> stats; 
         std::vector<double> adjusted_prices(prices);
-        const double delta = (i-half)/double(half)*max_adj;
+        const double delta = (i-half)/static_cast<double>(half)*max_adj;
         for ( auto & p : adjusted_prices ) p += delta;
         simulate_a( history, times, adjusted_prices, Side::Bid, set, 0, 1, eng2, stats );
         std::cout << "4 mean cost [ticks]" << delta << " " << stats.sum_return_by_dT_ / stats.sum_dT_ << std::endl;
@@ -1007,66 +1044,6 @@ namespace SDB {
             orders_to_cancel.emplace_back(time_, oid);
         }
     };
-    template <INotifier Notifier>
-        struct PassThroughTransport { 
-            MatchingEngine & eng_;
-            Notifier & notifier_;
-            const boost::random::exponential_distribution<> delay_distribution_;
-            const bool delay_disabled_; 
-            TimeType next_send_time_ ; 
-            std::unordered_map<ClientIDType, PriceMakerAroundWM *> price_makers ; 
-            std::vector<std::tuple<TimeType,ClientIDType, OrderData>> orders_to_place; 
-            std::vector<std::tuple<TimeType,OrderIDType>> orders_to_cancel;
-            std::unordered_map<ClientIDType, std::unordered_map<PriceType, int> > price_counts;
-            PassThroughTransport( MatchingEngine & eng, Notifier & notifier, const double delay_lambda ) : 
-                eng_(eng), notifier_(notifier) , delay_distribution_(std::max(delay_lambda,EPS)),
-                delay_disabled_(delay_lambda <= EPS),
-                next_send_time_( std::numeric_limits<TimeType>::max() ){}
-            void place_order( const ClientIDType cid, const OrderData & od ) {
-                price_counts.emplace( cid, std::unordered_map<PriceType, int>() )
-                        .first->second.emplace(od.price_, 0)
-                        .first->second += 1;
-                orders_to_place.emplace_back( eng_.time_, cid, od );
-            }
-            void cancel( const ClientIDType , const OrderIDType & oid ){
-                orders_to_cancel.emplace_back( eng_.time_, oid );
-            }
-            TimeType update_next_send_time( const TimeType time, boost::random::mt19937 & mt ) { 
-                const TimeType delay = delay_disabled_ ? 0 : safe_round<TimeType>(1e9*delay_distribution_(mt)); 
-                next_send_time_ = time + delay;
-                return next_send_time_ ;
-            }
-            TimeType next_send_time() const { return next_send_time_; }
-            void send() { 
-                auto place_it = orders_to_place.begin();
-                for ( ; place_it != orders_to_place.end() and std::get<0>(*place_it) <= next_send_time_ ; ++place_it) {
-                    const auto & [t,cid, od] = *place_it;
-                    eng_.add_simulation_order( cid, od.local_id_, od.price_, 
-                            od.total_size_, od.show_, od.side_, 
-                            false, *this);
-                }
-                auto cancel_it = orders_to_cancel.begin();
-                for ( ; cancel_it != orders_to_cancel.end() and std::get<0>(*cancel_it) <= next_send_time_ ; ++cancel_it) {
-                    const auto & [t, oid] = *cancel_it;
-                    std::cerr <<"transport cancel: " << oid << "\n";
-                    eng_.cancel_order(oid, *this);
-                }
-                if (not orders_to_place.empty())
-                    orders_to_place.erase(orders_to_place.begin(), place_it);
-                if (not orders_to_cancel.empty())
-                    orders_to_cancel.erase(orders_to_cancel.begin(), cancel_it);
-            }
-            void log( const NotifyMessageType mtype , const Order & o, const TimeType t, const SizeType trade_size = 0, const PriceType trade_price = 0) { 
-                std::cerr << "log mtype:" << mtype << "\n";
-                notifier_.log(mtype,  o, t,  trade_size, trade_price );
-                auto it = price_makers.find( o.client_id_ );
-                REQUIRE(it != price_makers.end()) ;
-                it->second->handle_own_order_message( mtype, o.local_id_, o.order_id_, trade_size, trade_price );
-            }
-            void log( const MatchingEngine & eng ) {
-                notifier_.log( eng );
-            }
-    };
 }
 
 TEST_CASE( "price maker" , "[AgentX]" ) { 
@@ -1114,14 +1091,14 @@ TEST_CASE( "price maker sim" , "[Agent]" ) {
     transport.price_makers.emplace( pm.client_id_, &pm );
     size_t i = 0; 
     while ( pm.next_action_time() != std::numeric_limits<TimeType>::max() and i < 1000) {
+        transport.update_next_send_time(mt);
         if (market.time_ == pm.next_action_time())
             market.time_ += 1;
         else 
             market.time_ = pm.next_action_time();
         eng.time_ = market.time_ ; 
-        transport.update_next_send_time(market.time_,mt);
         pm.markets_state_changed(transport);
-        transport.send();
+        transport.send(market.time_);
         pm.update_next_action_time();
         std::cerr << "step: " <<i << ", time: " << market.time_ << ", next action time:" << pm.next_action_time() << '\n';
         ++i;
@@ -1131,7 +1108,7 @@ TEST_CASE( "price maker sim" , "[Agent]" ) {
 TEST_CASE( "price distribution symmetry" , "[Agent]" ) {
     using namespace SDB;
     boost::random::mt19937 mt;
-    MarketState market{0,0.0};
+    MarketState market{0,0.0,{},{},{},{}};
     market.bid_prices_[0] = -1;
     market.bid_sizes_[0] = 10;
     market.ask_prices_[0] = 1;
@@ -1171,7 +1148,7 @@ TEST_CASE( "price maker delayed sim" , "[AgentX]" ) {
     using namespace SDB;
     boost::random::mt19937 mt;
     mt.seed(1);
-    MarketState market{0,0.0};
+    MarketState market{0,0.0,{},{},{},{}};
     market.bid_prices_[0] = 0;
     market.bid_sizes_[0] = 10;
     market.ask_prices_[0] = 1;
@@ -1191,6 +1168,7 @@ TEST_CASE( "price maker delayed sim" , "[AgentX]" ) {
     }
     const auto t_max = safe_round<TimeType>(1e9*60*60);
     while ( market.time_ < t_max ) {
+        transport.update_next_send_time(mt);
         TimeType t = std::numeric_limits<TimeType>::max();
         for ( const auto &  pm : price_makers )
             t = std::min( t, pm.next_action_time() );
@@ -1200,8 +1178,7 @@ TEST_CASE( "price maker delayed sim" , "[AgentX]" ) {
         eng.time_ = market.time_ ;
         for ( auto &  pm : price_makers )
             pm.markets_state_changed(transport);
-        transport.send();
-        transport.update_next_send_time(market.time_,mt);
+        transport.send(market.time_);
         for ( auto &  pm : price_makers )
             pm.update_next_action_time();
         eng.level2(
@@ -1249,7 +1226,7 @@ TEST_CASE( "symmetry" , "[AgentX]" ) {
     boost::random::mt19937 mt1, mt2;
     mt1.seed(1);
     mt2.seed(1);
-    MarketState market{0,0.0};
+    MarketState market{0,0.0,{},{},{},{}};
     market.bid_prices_[0] = 0;
     market.bid_sizes_[0] = 10;
     market.ask_prices_[0] = 1;
@@ -1286,4 +1263,280 @@ TEST_CASE( "symmetry" , "[AgentX]" ) {
         price_maker1.update_next_action_time();
         price_maker2.update_next_action_time();
     }
+}
+TEST_CASE( "trend follower" , "[Agent]" ) {
+    using namespace SDB;
+    boost::random::mt19937 mt(1);
+
+    MarketState market{0,0.0,{},{},{},{}};
+    market.bid_prices_[0] = -99;
+    market.bid_sizes_[0] = 10;
+    market.ask_prices_[0] = 99;
+    market.ask_sizes_[0] = 10;
+    TrendFollowerAgent tf(0,  market, 1., 0.2);
+    RecordTransport transport;
+    tf.markets_state_changed(transport);
+    CHECK( tf.ema_.ema_ == 0);
+    CHECK( tf.ema_.x_prev_ == 0);
+    CHECK( tf.ema_.t_prev_ == 0);
+    CHECK( transport.orders_to_place.empty() );
+    CHECK( transport.orders_to_cancel.empty() );
+
+    std::safe_round( 1e9 , market.time_ );
+    market.wm_ = 1;
+    tf.markets_state_changed(transport);
+    CHECK( tf.ema_.ema_ == 0);
+    CHECK( tf.ema_.x_prev_ == 1);
+    CHECK( tf.ema_.t_prev_ == 1);
+    REQUIRE( transport.orders_to_place.size()==1 );
+    const OrderData od = std::get<2>(transport.orders_to_place.front());
+    CHECK( od.price_ == market.ask_prices_[0] );
+    CHECK( od.side_ == Side::Bid );
+    CHECK( transport.orders_to_cancel.empty() );
+    OrderIDType oid;
+    oid.fill(8);
+    CHECK( not tf.unacked_orders_.empty() );
+    CHECK( tf.orders_.empty() );
+    tf.handle_own_order_message(NotifyMessageType::Ack, od.local_id_, oid, 0, 0);
+    CHECK( tf.unacked_orders_.empty() );
+    CHECK( not tf.orders_.empty() );
+
+    std::safe_round( 2e9 , market.time_ );
+    market.wm_ = 2;
+    tf.markets_state_changed(transport);
+    CHECK( tf.ema_.ema_ == 1.-std::exp( -1. ) );
+    CHECK( tf.ema_.x_prev_ == 2);
+    CHECK( tf.ema_.t_prev_ == 2);
+    //we already have an order. do not cancel it:
+    REQUIRE( transport.orders_to_place.size()==1 );
+    CHECK( transport.orders_to_cancel.empty() );
+
+
+    std::safe_round( 2e9 , market.time_ );
+    market.wm_ = 2;
+    market.ask_prices_[0] += 100;
+    tf.markets_state_changed(transport);
+    //cancel and place a new order at the new offer price
+    REQUIRE( transport.orders_to_place.size()==2 );
+    REQUIRE( transport.orders_to_cancel.size()==1 );
+
+    const OrderData od2 = std::get<2>(transport.orders_to_place.back());
+    CHECK( od2.price_ == market.ask_prices_[0] );
+    CHECK( od2.side_ == Side::Bid );
+    CHECK( std::get<1>(transport.orders_to_cancel.front()) == oid );
+
+}
+
+TEST_CASE( "full simulator" , "[Agent]" ) {
+    using namespace SDB;
+
+    spdlog::set_level(spdlog::level::info);
+    spdlog::set_pattern("[%L] [%s:%#] [f:%!] %v");
+
+    boost::random::mt19937 mt(0);
+
+    double wm_sum  =0 ;
+    double wm_sum_sq = 0;
+    int n_wm = 0;
+    double mean, stdev;
+    for (int k = 0 ; k < 10; ++k) {
+        std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+        constexpr size_t n_agents = 10;
+        MarketState market{0, 0.0, {}, {}, {}, {}};
+        std::vector<PriceMakerAroundWM> price_makers;
+        for (size_t i = 0; i < n_agents; ++i ) {
+            const int direction = (i%2 == 0) ? -1 : 1;
+            price_makers.emplace_back( i, market, mt, 1., 1./60.,
+                2.*direction, 1., 10., 0.01,
+                10 );
+        }
+        std::vector<TrendFollowerAgent> trend_followers;
+        for (size_t i = 0; i < n_agents; ++i )
+            trend_followers.emplace_back( price_makers.size()+i, market, 1,  0.5 );
+        price_makers.reserve(n_agents);
+        MatchingEngine eng ;
+        market.bid_prices_[0] = 1;
+        market.ask_prices_[0] = -1;
+        market.bid_sizes_[0] = 10;
+        market.ask_sizes_[0] = 10;
+        const auto price_counts = simulate( mt, market, price_makers,  trend_followers, eng , NOOPNotify::instance(), 0.0, 23*60*60*1e9, nullptr);
+        std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
+        std::chrono::duration<double, std::ratio<1>> dt = t1 - t0;
+        //SPDLOG_INFO("full simulator took {}, wm {}", dt, market.wm_);
+        for (ClientIDType i = 0; i < n_agents*2; ++i ) {
+            auto it = price_counts.find( i );
+            if (it == price_counts.end() ) {
+                SPDLOG_ERROR("price_counts could not find strategy {} at simulation {}", i, k);
+                continue;
+            }
+            //REQUIRE( it != price_counts.end() );
+            const auto & map = it->second;
+            std::vector<std::pair<PriceType, int> > vec( map.begin(), map.end() );
+            std::sort( vec.begin(), vec.end() );
+            int sum_orders = 0;
+            //double sum_orders_by_price = 0;
+            for (const auto & [price, count]: vec) {
+                //SPDLOG_INFO("client {}, price {}, count {}", i, price, count);
+                sum_orders += count;
+                //sum_orders_by_price += count * price;
+            }
+            REQUIRE( sum_orders > 0 );
+            //SPDLOG_INFO("client {}, mean price {}, total orders {}", i, sum_orders_by_price/sum_orders, sum_orders);
+        }
+        wm_sum += market.wm_;
+        wm_sum_sq += market.wm_ * market.wm_;
+        n_wm += 1;
+        mean = wm_sum / n_wm;
+        stdev = sqrt( wm_sum_sq / n_wm  - mean * mean );
+        SPDLOG_INFO( "wm {:7.2f} after {}. mean {:5.2f} ± {:5.2f} after {:4d} tries ", market.wm_, dt,
+            mean, stdev , n_wm );
+    }
+    REQUIRE( std::abs(mean)/stdev < 2*std::sqrt(n_wm) );
+}
+
+TEST_CASE( "slow buyers and fast sellers" , "[Agent]" ) {
+    using namespace SDB;
+
+    spdlog::set_level(spdlog::level::info);
+    spdlog::set_pattern("[%L] [%s:%#] [f:%!] %v");
+
+    boost::random::mt19937 mt(0);
+
+    double wm_sum  =0 ;
+    double wm_sum_sq = 0;
+    int n_wm = 0;
+    double mean, stdev;
+    for (int k = 0 ; k < 10; ++k) {
+        std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+        constexpr size_t n_agents = 10;
+        MarketState market{0, 0.0, {}, {}, {}, {}};
+        std::vector<PriceMakerAroundWM> price_makers;
+        for (size_t i = 0; i < n_agents; ++i ) {
+            const bool slow = i%2 == 1;
+            if (slow)
+                price_makers.emplace_back(
+                    i, market, mt,
+                    1., 1. / 60. ,
+                    -.5, 1., 10., 0.01,
+                    10);
+            else
+                price_makers.emplace_back(
+                    i, market, mt,
+                    1., 1.,
+                    .5, 1., 10., 0.01,
+                    10);
+
+        }
+        std::vector<TrendFollowerAgent> trend_followers;
+        //for (size_t i = 0; i < n_agents; ++i ) trend_followers.emplace_back( price_makers.size()+i, market, 1,  0.5 );
+        price_makers.reserve(n_agents);
+        MatchingEngine eng ;
+        market.bid_prices_[0] = 1;
+        market.ask_prices_[0] = -1;
+        market.bid_sizes_[0] = 10;
+        market.ask_sizes_[0] = 10;
+        std::ofstream out(std::format("out_{:03d}.txt", k));
+        const auto price_counts = simulate( mt, market, price_makers,  trend_followers, eng , NOOPNotify::instance(), 0.0, 60*60*1e9, &out);
+        out.close();
+        std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
+        std::chrono::duration<double, std::ratio<1>> dt = t1 - t0;
+        //SPDLOG_INFO("full simulator took {}, wm {}", dt, market.wm_);
+        for (ClientIDType i = 0; i < price_makers.size() + trend_followers.size(); ++i ) {
+            auto it = price_counts.find( i );
+            if (it == price_counts.end() ) {
+                SPDLOG_ERROR("price_counts could not find strategy {} at simulation {}", i, k);
+                continue;
+            }
+            //REQUIRE( it != price_counts.end() );
+            const auto & map = it->second;
+            std::vector<std::pair<PriceType, int> > vec( map.begin(), map.end() );
+            std::sort( vec.begin(), vec.end() );
+            int sum_orders = 0;
+            for (const auto & [price, count]: vec)
+                sum_orders += count;
+            REQUIRE( sum_orders > 0 );
+            //SPDLOG_INFO("client {}, mean price {}, total orders {}", i, sum_orders_by_price/sum_orders, sum_orders);
+        }
+        wm_sum += market.wm_;
+        wm_sum_sq += market.wm_ * market.wm_;
+        n_wm += 1;
+        mean = wm_sum / n_wm;
+        stdev = sqrt( wm_sum_sq / n_wm  - mean * mean );
+        SPDLOG_INFO( "wm {:7.2f} after {}. mean {:5.2f} ± {:5.2f} after {:4d} tries ", market.wm_, dt,
+            mean, stdev , n_wm );
+    }
+    REQUIRE( mean > 0 ); //expect market to rally.
+}
+
+TEST_CASE( "large order buyers and small order sellers" , "[Agent]" ) {
+    using namespace SDB;
+
+    spdlog::set_level(spdlog::level::info);
+    spdlog::set_pattern("[%L] [%s:%#] [f:%!] %v");
+
+    boost::random::mt19937 mt(0);
+
+    double wm_sum  =0 ;
+    double wm_sum_sq = 0;
+    int n_wm = 0;
+    double mean, stdev;
+    for (int k = 0 ; k < 10; ++k) {
+        std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+        constexpr size_t n_agents = 10;
+        MarketState market{0, 0.0, {}, {}, {}, {}};
+        std::vector<PriceMakerAroundWM> price_makers;
+        for (size_t i = 0; i < n_agents; ++i ) {
+            const bool large_orders = i%2 == 1;
+            if (large_orders)
+                price_makers.emplace_back(
+                    i, market, mt,
+                    1., 1. ,
+                    -.5, 1., 10., 0.01,
+                    10);
+            else
+                price_makers.emplace_back(
+                    i, market, mt,
+                    1., 1.,
+                    .5, 1., 2., 0.01,
+                    10);
+
+        }
+        std::vector<TrendFollowerAgent> trend_followers;
+        //for (size_t i = 0; i < n_agents; ++i ) trend_followers.emplace_back( price_makers.size()+i, market, 1,  0.5 );
+        price_makers.reserve(n_agents);
+        MatchingEngine eng ;
+        market.bid_prices_[0] = 1;
+        market.ask_prices_[0] = -1;
+        market.bid_sizes_[0] = 10;
+        market.ask_sizes_[0] = 10;
+        std::ofstream out(std::format("out_{:03d}.txt", k));
+        const auto price_counts = simulate( mt, market, price_makers,  trend_followers, eng , NOOPNotify::instance(), 0.0, 60*60*1e9, &out);
+        out.close();
+        std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
+        std::chrono::duration<double, std::ratio<1>> dt = t1 - t0;
+        for (ClientIDType i = 0; i < price_makers.size() + trend_followers.size(); ++i ) {
+            auto it = price_counts.find( i );
+            if (it == price_counts.end() ) {
+                SPDLOG_ERROR("price_counts could not find strategy {} at simulation {}", i, k);
+                continue;
+            }
+            //REQUIRE( it != price_counts.end() );
+            const auto & map = it->second;
+            std::vector<std::pair<PriceType, int> > vec( map.begin(), map.end() );
+            std::sort( vec.begin(), vec.end() );
+            int sum_orders = 0;
+            for (const auto & [price, count]: vec)
+                sum_orders += count;
+            REQUIRE( sum_orders > 0 );
+            //SPDLOG_INFO("client {}, mean price {}, total orders {}", i, sum_orders_by_price/sum_orders, sum_orders);
+        }
+        wm_sum += market.wm_;
+        wm_sum_sq += market.wm_ * market.wm_;
+        n_wm += 1;
+        mean = wm_sum / n_wm;
+        stdev = sqrt( wm_sum_sq / n_wm  - mean * mean );
+        SPDLOG_INFO( "wm {:7.2f} after {}. mean {:5.2f} ± {:5.2f} after {:4d} tries ", market.wm_, dt,
+            mean, stdev , n_wm );
+    }
+    REQUIRE( mean > 0 ); //expect market to rally.
 }

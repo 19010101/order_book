@@ -11,25 +11,29 @@
 
 #include "memory_manager.h"
 
-//#include <boost/intrusive/list.hpp>
+#define SPDLOG_ACTIVE_LEVEL SPDLOG_LEVEL_TRACE
+#define SPDLOG_DEBUG_ON
+#define SPDLOG_TRACE_ON
+#include <spdlog/spdlog.h>
+#include <spdlog/fmt/bin_to_hex.h>
 
 namespace SDB { 
     enum class Side : std::uint8_t { Bid, Offer } ; 
 
-    enum class NotifyMessageType : std::uint8_t { Ack, Trade, Cancel, End } ; 
+    enum class NotifyMessageType : std::uint8_t { Ack, Trade, Cancel, End} ;
 
 }
 
 namespace std { 
     using namespace SDB;
-    inline string to_string( const NotifyMessageType & mtype ) { 
-        switch (mtype) {
-            case NotifyMessageType::Ack : return "Ack" ; 
-            case NotifyMessageType::Trade : return "Trade" ; 
+    inline string to_string( const NotifyMessageType & message_type ) {
+        switch (message_type) {
+            case NotifyMessageType::Ack    : return "Ack   " ;
+            case NotifyMessageType::Trade  : return "Trade " ;
             case NotifyMessageType::Cancel : return "Cancel" ; 
-            case NotifyMessageType::End : return "End" ; 
+            case NotifyMessageType::End    : return "End   " ;
         }
-        throw std::runtime_error("WTF to string mtype");
+        throw std::runtime_error("WTF to string message type");
     }
     inline string to_string( const Side & side ) { 
         switch(side) {
@@ -42,8 +46,8 @@ namespace std {
 
 namespace SDB { 
 
-    inline std::ostream & operator<<(std::ostream & out, const NotifyMessageType & mtype ) {
-        out << std::to_string(mtype) ; 
+    inline std::ostream & operator<<(std::ostream & out, const NotifyMessageType & message_type ) {
+        out << std::to_string(message_type) ;
         return out;
     }
     inline std::ostream & operator<<(std::ostream & out, const Side & side ) {
@@ -56,20 +60,22 @@ namespace SDB {
     using ClientIDType = uint32_t;
     using LocalOrderIDType = uint32_t;
     using PriceType = int16_t;
-    using SizeType = uint16_t;
+    using SizeType = int16_t;
 
 } 
 namespace std {
     template <size_t N>
     std::ostream & operator<<(std::ostream & out, const std::array<std::uint8_t, N> & oid ) {
+        /*
         for (const auto i : oid) 
             if (i > 0x20 and i < 0x7f) out << char(i);
             else out <<  '<' << std::format( "{:X}", i ) << '>' ;
-        /*
+            */
+
         out << "0x" ; 
         for (const auto i : oid) 
-            out <<  std::format( "{:x}", i );
-        */
+            out <<  std::format( "{:02x}", i );
+
         return out;
     }
     inline std::string to_string( const OrderIDType & oid) { 
@@ -78,10 +84,12 @@ namespace std {
         return out.str();
     }
 }
-namespace SDB{ 
+namespace SDB{
+    inline std::string format_as( const NotifyMessageType & message) { return std::to_string(message); }
+    inline std::string format_as( const Side & side) { return std::to_string(side); }
     inline Side get_other_side( Side s ) {
         switch (s) {
-            case Side::Bid : return Side::Offer ; 
+            case Side::Bid : return Side::Offer ;
             case Side::Offer : return Side::Bid ; 
         }
         throw std::runtime_error("Come on");
@@ -113,15 +121,18 @@ namespace SDB{
     struct MatchingEngine ;
     template <typename T>
         concept INotifier = requires( T & notifier, const NotifyMessageType mtype, const Order & o, const TimeType now, 
-                const SizeType traded_size, const PriceType traded_price , const MatchingEngine & eng) 
+                const SizeType traded_size, const PriceType traded_price , const MatchingEngine & eng,
+                const OrderIDType & oid, const std::string & error_message)
         {
             notifier.log( mtype, o, now , traded_size, traded_price ) ;
             notifier.log( eng );
+            notifier.error( oid, error_message ) ;
         };
 
     struct NOOPNotify {
-        void log( const NotifyMessageType , const Order & , const TimeType, const SizeType = 0, const PriceType = 0) const {}
-        void log( const MatchingEngine & ) const {}
+        static void log( const NotifyMessageType , const Order & , const TimeType, const SizeType = 0, const PriceType = 0) {}
+        static void log( const MatchingEngine & ) {}
+        static void error( const OrderIDType & , const std::string & ) {}
         static NOOPNotify & instance(){ 
             static NOOPNotify n; 
             return n;
@@ -270,7 +281,7 @@ namespace SDB{
                 return a == b->order_id_;
             }
         };
-        using PtrSet = std::unordered_multiset< Order*, typename Order::Hash, typename  Order::Eq>;
+        using PtrSet = std::unordered_multiset< Order*, Order::Hash, Order::Eq>;
 
     };
 
@@ -515,10 +526,11 @@ namespace SDB {
                         std::cerr << "OID mismatch " << oid << " " << *it << " " << std::to_string(**it) << std::endl;  
                 if ( 1 != std::distance( eq_range.first, eq_range.second ) ) { 
                     //for (auto it = eq_range.first; it != eq_range.second; ++it) std::cerr << "OOOPS " << oid << " " << *it << " " << std::to_string(**it) << std::endl;  
-                    throw std::runtime_error( std::to_string(time_) + 
+                    notify.error( oid, std::to_string(time_) +
                             ": cancelling more than one order with oid " +
                             std::to_string(oid)  + ". Num orders is " +
                             std::to_string(std::distance( eq_range.first, eq_range.second ) ) + "." );
+                    return;
                 }
                 Order & order = **eq_range.first;
                 Level::SET & levels = get_book( order.side_ );
@@ -594,7 +606,7 @@ namespace SDB {
                 ll <= std::numeric_limits<T>::max() and 
                 ll >= std::numeric_limits<T>::min() ;
         }
-        
+
     template<typename T> 
         T safe_round( const double & d ) { 
             T t;
