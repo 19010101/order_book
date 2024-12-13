@@ -1,5 +1,5 @@
 " set makeprg="xx"
-set makeprg=cmake\ --build\ debug\ &&\ ./debug/tests\ \"\[Agent\]\"
+set makeprg=cmake\ --build\ debug\ --target\ tests_rng&&\ ./debug/tests_rng
 " unlet errorformat
 set errorformat=
       \%*[^\"]\"%f\"%*\\D%l:%c:\ %m,

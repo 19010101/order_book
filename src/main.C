@@ -10,6 +10,8 @@
 int main(const int argc,const char ** argv) { 
     using namespace SDB;
 
+    return 0;
+/*
     if (argc!=4) return -1;
     
 
@@ -119,5 +121,6 @@ int main(const int argc,const char ** argv) {
     std::cout << "t: " << std::chrono::duration<double, std::ratio<1>>( TMax*1e-9 ) << std::endl;
 
     return 0;
+    */
 }
 

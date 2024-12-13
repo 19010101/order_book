@@ -689,4 +689,23 @@ namespace SDB {
         return transport.price_counts;
     }
 
+
+    void experiment() {
+
+        boost::random::mt19937 mt(0);
+        std::vector<PriceMakerAroundWM> price_makers;
+        constexpr size_t n_agents = 10;
+        MarketState market{0, 0.0, {}, {}, {}, {}};
+
+        for (size_t i = 0; i < n_agents; ++i ) {
+            const bool large_orders = i%2 == 1;
+            if (large_orders)
+                price_makers.emplace_back(
+                    i, market, mt,
+                    1., 1. ,
+                    -.5, 1., 10., 0.01,
+                    10);
+        }
+
+    }
 }

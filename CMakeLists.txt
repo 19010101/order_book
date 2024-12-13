@@ -24,6 +24,8 @@ add_executable(tests src/test.C)
 #target_include_directories(tests PRIVATE ${Boost_INCLUDE_DIRS})
 target_link_libraries(tests PUBLIC Catch2::Catch2WithMain Boost::boost spdlog::spdlog_header_only)
 
+add_executable(tests_rng src/tests_rng.C)
+target_link_libraries(tests_rng PUBLIC Catch2::Catch2WithMain Boost::boost spdlog::spdlog_header_only)
 
 ### include(CTest)
 ### include(ParseAndAddCatchTests)

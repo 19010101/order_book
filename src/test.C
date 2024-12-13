@@ -2,15 +2,16 @@
 #include "ob.h"
 #include "sim.h"
 #include "agents.h"
-#include "utils.h"
 #include <boost/random/bernoulli_distribution.hpp>
 
-#define CATCH_CONFIG_NO_STDERR_CAPTURE
+//#define CATCH_CONFIG_NO_STDERR_CAPTURE
 #define CATCH_CONFIG_MAIN
 #include <catch2/catch_all.hpp>
 
 #include <chrono>
 #include <fmt/chrono.h>
+
+#include "utils.h"
 
 TEST_CASE( "test ordering", "[Level]" ) {
     using namespace SDB;
