@@ -38,4 +38,20 @@ namespace SDB {
                 else return MeanReversion::update( x, -x0, k, s, dt, rng) ; 
             }
     };
+
+    template <typename RandomWalk>
+    struct RandomWalkWithState {
+        RandomWalk mr_ ; 
+        double x_ , x0_ , k_, s_ ; 
+        RandomWalkWithState(
+                double x, 
+                double x0, 
+                double k, 
+                double s) : x_(x), x0_(x0), k_(k), s_(s) {};
+
+        template <typename RNG>
+            double update( const double dt, RNG & rng) {
+                return x_ = mr_.update( x_, x0_,  k_, s_, dt, rng );
+            }
+    };
 }

@@ -18,6 +18,8 @@
 #include <spdlog/fmt/bin_to_hex.h>
 
 namespace SDB { 
+    constexpr double EPS = 1e-10 ; 
+
     enum class Side : std::uint8_t { Bid, Offer } ; 
 
     enum class NotifyMessageType : std::uint8_t { Ack, Trade, Cancel, End} ;

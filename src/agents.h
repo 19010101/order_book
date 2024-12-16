@@ -1,5 +1,6 @@
 #pragma once
 #include "ob.h"
+#include "random_walk.h"
 
 #include <boost/random/exponential_distribution.hpp> 
 #include <boost/random/poisson_distribution.hpp> 
@@ -14,7 +15,8 @@
 #include <boost/multi_index/member.hpp>
 
 #include <iomanip>
-#include <fstream>
+
+
 
 namespace SDB {
 
@@ -27,7 +29,7 @@ namespace SDB {
         std::array<SizeType, 4>  ask_sizes_;
     };
 
-    std::ostream & operator<<(std::ostream & out, const MarketState & market ) {
+    inline std::ostream & operator<<(std::ostream & out, const MarketState & market ) {
         out << std::right << std::fixed << std::setw(15)<<  std::setprecision(9) << static_cast<double>(market.time_) * 1e-9
                 << ' '
                 << std::right  << std::setw(3)<<  market.bid_sizes_[2]
@@ -266,10 +268,10 @@ namespace SDB {
 
         LocalOrderIDType local_id_counter_;
         boost::random::mt19937 & mt_;
-        const boost::random::exponential_distribution<> placement_, cancellation_;
-        mutable boost::random::normal_distribution<double> order_price_;
-        const boost::random::poisson_distribution<SizeType, double> order_size_;
-        const boost::random::bernoulli_distribution<double> aggressive_;
+        boost::random::exponential_distribution<> placement_, cancellation_;
+        boost::random::normal_distribution<double> order_price_;
+        boost::random::poisson_distribution<SizeType, double> order_size_;
+        boost::random::bernoulli_distribution<double> aggressive_;
         const size_t n_orders_ ;
         TimeType placement_time_ ; 
 
@@ -688,23 +690,172 @@ namespace SDB {
         }
         return transport.price_counts;
     }
+    inline double find_center_shift_for_range_bound(const double s0, const double s1, const double sm ) { 
+        const double x = 2*(s1-s0)/(sm-s0) - 1; 
+        if (x < -1  or x > 1)
+            throw std::runtime_error( fmt::format("{} should be between -1 and 1", x) );
+        return std::atanh( x );
+    }
+    inline double range_bound( const double x, const double min_value, const double max_value ,
+            const double center_shift) { 
+        const double zero_to_one = (1. + std::tanh(x+center_shift) ) / 2.;
+        return min_value + zero_to_one * (max_value - min_value);
+    }
+    inline double sln( const double x, const double fc, const double fm,  const double f0 ) { 
+        return 1/( 1/f0 + ( std::exp( x*std::log((1/fm - 1/f0)/(1/fc - 1/f0)) + std::log(1/fc - 1/f0) ) ) ) ; //return frequency always smaller than f0.
+    }
+
+    struct PriceMakerWithRandomParams  {
+        boost::random::mt19937 & mt_;
+        //const double cancellation_time_lower_limit_ , cancellation_time_upper_limit_ ; 
+        const double 
+            freq_lower_limit_,  freq_center_, freq_width_ ,
+            period_min_,  period_center_, period_max_, period_center_shift_ ,
+            order_size_min_, order_size_center_, order_size_max_ , order_size_center_shift_; 
+        RandomWalkWithState<MeanReversion> cancellation_, order_size_ ;
+        RandomWalkWithState<BifurcatingMeanReversion> price_mean_ ;
+
+        PriceMakerAroundWM pm_; 
+        
+        PriceMakerWithRandomParams( const ClientIDType cid, const MarketState & market, boost::random::mt19937 & mt) :
+            mt_(mt),
+            freq_lower_limit_(.1) ,  // 0.1/seconds 
+            freq_center_(.1/60.) ,  // 0.1/minute
+            freq_width_( 1./( 60*60. ) ), // 1/hour
+            period_min_( 1 ), 
+            period_center_( 60 ), 
+            period_max_( 6*60*60 ), 
+            period_center_shift_(
+                    find_center_shift_for_range_bound(period_min_, period_center_, period_max_)),
+            order_size_min_( 1 ), 
+            order_size_center_( 10 ), 
+            order_size_max_( 50 ), 
+            order_size_center_shift_(
+                    find_center_shift_for_range_bound(order_size_min_, order_size_center_, order_size_max_)),
+            cancellation_( 0.0 ,  0.0 , .00010 , .01 ) , 
+            order_size_  ( 0.0 ,  0.0 , .00010 , .01 ) , 
+            price_mean_  ( 0.0 ,  2.0 , .00100 , .1  ) ,
+            pm_(cid, market , mt_,
+                    1.,  
+                    //sln(cancellation_.x_, freq_center_, freq_width_, freq_lower_limit_), 
+                    1/range_bound(cancellation_.x_, period_min_, period_max_, 
+                        period_center_shift_),
+                    price_mean_.x_,
+                    3.,
+                    range_bound(order_size_.x_, order_size_min_, order_size_max_, 
+                        order_size_center_shift_),
+                    0.05, 10 ) {}
+        void update( const double dt )  {
+            /*
+            pm_.cancellation_.param( 
+                    sln(cancellation_.update( dt, mt_ ),
+                        freq_center_, freq_width_, freq_lower_limit_));
+                        */
+            pm_.cancellation_.param( 
+                    1/range_bound(cancellation_.update( dt, mt_ ),
+                        period_min_, period_max_, 
+                        period_center_shift_)    
+                    ) ;
+                       
+            pm_.order_price_.param( 
+                    boost::random::normal_distribution<double>::param_type(
+                        price_mean_.update( dt, mt_ ), pm_.order_price_.sigma() ) );
+            pm_.order_size_.param(
+                    boost::random::poisson_distribution<SizeType, double>::param_type( 
+                        range_bound(order_size_.update(dt, mt_), 
+                            order_size_min_, order_size_max_, 
+                            order_size_center_shift_)    ) 
+                    );
+        }
+        double get_cancellation_period() const { return 1./pm_.cancellation_.lambda(); }
+        double get_order_price_mean() const { return pm_.order_price_.mean() ; }
+        double order_size_mean() const { return pm_.order_size_.mean() ; }
+    };
 
 
-    void experiment() {
+    inline void experiment(boost::random::mt19937 & mt, std::ostream * mkt_out_ptr, std::ostream * params_out_ptr) {
+        std::vector<PriceMakerWithRandomParams> price_makers;
+        constexpr size_t n_agents = 100;
+        price_makers.reserve( n_agents );
+        MarketState market{0, 0.0, {-1}, {10}, {1}, {10}};
+        for (size_t i = 0; i < n_agents; ++i ) 
+            price_makers.emplace_back( i, market, mt);
+        MatchingEngine  eng;
+        PassThroughTransport<NOOPNotify> transport(eng, NOOPNotify::instance(), 0.0);
+        for( auto & pm : price_makers) transport.add_agent(pm.pm_);
+        const std::vector<TrendFollowerAgent> trend_followers;
 
-        boost::random::mt19937 mt(0);
-        std::vector<PriceMakerAroundWM> price_makers;
-        constexpr size_t n_agents = 10;
-        MarketState market{0, 0.0, {}, {}, {}, {}};
+        constexpr TimeType t_max = static_cast<TimeType>( 1e9 * 60*60*24 );
 
-        for (size_t i = 0; i < n_agents; ++i ) {
-            const bool large_orders = i%2 == 1;
-            if (large_orders)
-                price_makers.emplace_back(
-                    i, market, mt,
-                    1., 1. ,
-                    -.5, 1., 10., 0.01,
-                    10);
+        double last_param_update_time = std::numeric_limits<double>::quiet_NaN();
+
+        while ( market.time_ <= t_max) {
+            for (auto &pm: price_makers)
+                pm.pm_.update_next_action_time();
+            const TimeType t_algo = std::ranges::min_element( 
+                    price_makers.begin(), 
+                    price_makers.end(),
+                    [](const PriceMakerWithRandomParams & a,  const PriceMakerWithRandomParams & b) 
+                    { return a.pm_.next_action_time() < b.pm_.next_action_time(); }
+                    )->pm_.next_action_time();
+            transport.update_next_send_time(mt); //refresh delay_
+            const TimeType t_transport = transport.next_send_time(); //earliest order placement time + delay
+            const TimeType t = std::min(t_algo, t_transport);
+            if (t==market.time_)
+                throw std::runtime_error(std::format("Market time is stuck: {}", t) );
+            market.time_ = t;
+            eng.time_ = market.time_;
+            for (auto & a : price_makers) a.pm_.markets_state_changed(transport);
+            transport.send(market.time_);
+            if (transport.next_send_time() <= market.time_)
+                throw std::runtime_error(std::format("Transport next send time should have moved : {} - {}",
+                    transport.next_send_time(), market.time_) );
+            eng.level2(
+                market.bid_prices_, market.bid_sizes_,
+                market.ask_prices_, market.ask_sizes_
+            );
+            if (market.bid_sizes_[0] != 0 and market.ask_sizes_[0] != 0)
+                market.wm_ = static_cast<double>(market.bid_prices_[0] * market.ask_sizes_[0] +
+                                                 market.ask_prices_[0] * market.bid_sizes_[0]) /
+                             static_cast<double>(market.bid_sizes_[0] + market.ask_sizes_[0]);
+
+            if (mkt_out_ptr != nullptr) 
+                *mkt_out_ptr << market.time_*1e-9/60./60. << ' ' << market.wm_ << '\n'  ;
+            
+            const double dt = std::isnan( last_param_update_time ) ? 1+EPS : 1e-9*market.time_ - last_param_update_time;
+            if (dt >= 1) {
+                for (auto & pm : price_makers) pm.update(dt);
+                last_param_update_time = 1e-9*market.time_; 
+                if (params_out_ptr != nullptr) {
+                    double 
+                        sum_cancel  = 0 , sumsq_cancel = 0,
+                                    sum_price  = 0 , sumsq_price = 0,
+                                    sum_size  = 0 , sumsq_size = 0;
+                    for (const auto & pm : price_makers ) {
+                        sum_cancel += pm.get_cancellation_period(); 
+                        sumsq_cancel += pm.get_cancellation_period()*pm.get_cancellation_period(); 
+                        sum_price += pm.get_order_price_mean();
+                        sumsq_price += pm.get_order_price_mean()*pm.get_order_price_mean();
+                        sum_size += pm.order_size_mean();
+                        sumsq_size += pm.order_size_mean()*pm.order_size_mean();
+                    }
+                    const double mean_cancel = sum_cancel/price_makers.size();
+                    const double std_cancel = std::sqrt(sumsq_cancel/price_makers.size() - mean_cancel*mean_cancel);
+                    const double mean_price = sum_price/price_makers.size();
+                    const double std_price = std::sqrt(sumsq_price/price_makers.size() - mean_price*mean_price);
+                    const double mean_size = sum_size/price_makers.size();
+                    const double std_size = std::sqrt(sumsq_size/price_makers.size() - mean_size*mean_size);
+
+                    *params_out_ptr << last_param_update_time/60./60. << ' ' << market.wm_ 
+                        << ' ' <<  mean_cancel << ' ' << std_cancel
+                        << ' ' <<  mean_price << ' ' << std_price
+                        << ' ' <<  mean_size << ' ' << std_size
+                        ;
+                    //for (const auto & pm : price_makers ) *params_out_ptr<< ' '  << pm.pm_.cancellation_.lambda();
+                    *params_out_ptr<< '\n'  ;
+                }
+            }
+
         }
 
     }

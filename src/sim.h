@@ -24,7 +24,6 @@
 
 namespace SDB { 
 
-    constexpr double EPS = 1e-10 ; 
 
 
     struct ClientType { 
