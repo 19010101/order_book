@@ -16,7 +16,9 @@
 
 #include <iomanip>
 
-
+#include <ATen/ATen.h>
+#include <torch/serialize.h>
+#include <torch/torch.h>
 
 namespace SDB {
 
@@ -25,8 +27,10 @@ namespace SDB {
         double wm_ ;
         std::array<PriceType, 4> bid_prices_;
         std::array<SizeType, 4>  bid_sizes_;
+        std::array<float, 4> bid_ages_;
         std::array<PriceType, 4> ask_prices_;
         std::array<SizeType, 4>  ask_sizes_;
+        std::array<float, 4> ask_ages_;
     };
 
     inline std::ostream & operator<<(std::ostream & out, const MarketState & market ) {
@@ -777,7 +781,7 @@ namespace SDB {
         std::vector<PriceMakerWithRandomParams> price_makers;
         constexpr size_t n_agents = 100;
         price_makers.reserve( n_agents );
-        MarketState market{0, 0.0, {-1}, {10}, {1}, {10}};
+        MarketState market{0, 0.0, {-1}, {10}, {0}, {1}, {10}, {0}};
         for (size_t i = 0; i < n_agents; ++i ) 
             price_makers.emplace_back( i, market, mt);
         MatchingEngine  eng;
@@ -786,6 +790,8 @@ namespace SDB {
         const std::vector<TrendFollowerAgent> trend_followers;
 
         constexpr TimeType t_max = static_cast<TimeType>( 1e9 * 60*60*24 );
+
+        std::vector<MarketState> market_data; 
 
         double last_param_update_time = std::numeric_limits<double>::quiet_NaN();
 
@@ -810,17 +816,17 @@ namespace SDB {
             if (transport.next_send_time() <= market.time_)
                 throw std::runtime_error(std::format("Transport next send time should have moved : {} - {}",
                     transport.next_send_time(), market.time_) );
-            eng.level2(
-                market.bid_prices_, market.bid_sizes_,
-                market.ask_prices_, market.ask_sizes_
+            eng.level25(
+                market.bid_prices_, market.bid_sizes_, market.bid_ages_,
+                market.ask_prices_, market.ask_sizes_, market.ask_ages_
             );
             if (market.bid_sizes_[0] != 0 and market.ask_sizes_[0] != 0)
                 market.wm_ = static_cast<double>(market.bid_prices_[0] * market.ask_sizes_[0] +
                                                  market.ask_prices_[0] * market.bid_sizes_[0]) /
                              static_cast<double>(market.bid_sizes_[0] + market.ask_sizes_[0]);
 
-            if (mkt_out_ptr != nullptr) 
-                *mkt_out_ptr << market.time_*1e-9/60./60. << ' ' << market.wm_ << '\n'  ;
+            market_data.emplace_back( market );
+            //if (mkt_out_ptr != nullptr) *mkt_out_ptr << market.time_*1e-9/60./60. << ' ' << market.wm_ << '\n'  ;
             
             const double dt = std::isnan( last_param_update_time ) ? 1+EPS : 1e-9*market.time_ - last_param_update_time;
             if (dt >= 1) {
@@ -858,5 +864,134 @@ namespace SDB {
 
         }
 
+        if (mkt_out_ptr != nullptr) {
+            SPDLOG_INFO("Done : {}", market_data.size() );
+            size_t start = 0; 
+            while (start < market_data.size() and market_data[start].time_ < 1e9*60*60/2 )
+                ++start; 
+            size_t end = start; 
+            while (end < market_data.size() and market_data[end].time_ < 1e9*60*60*23.5 ) 
+                ++end; 
+            constexpr size_t nextra = 5;
+            constexpr size_t C = nextra  + 1 + 6*market.bid_prices_.size() ;
+            torch::Tensor market_torch = torch::empty({int64_t(end-start),  C});
+            if( C != market_torch.size(1) ) 
+                throw std::runtime_error("I don't know these matrices");
+
+            SPDLOG_INFO("Allocated : {}", market_data.size() );
+
+            if ( not market_torch.is_contiguous()  ) {  
+                SPDLOG_ERROR("contiguous : {}" , market_torch.is_contiguous() );
+                for (int64_t i = 0; i < int64_t(end-start); ++i) { 
+                    const MarketState & m = market_data[i+start];
+                    int j = 0;
+                    market_torch.index_put_( {i,j} , static_cast<float>(m.time_*1e-9) ) ;
+                    for ( const auto x : m.bid_prices_ ) 
+                        market_torch.index_put_( {i,++j} , static_cast<float>(x) ) ;
+                    for ( const auto x : m.ask_prices_ ) 
+                        market_torch.index_put_( {i,++j} , static_cast<float>(x) ) ;
+                    for ( const auto x : m.bid_sizes_ ) 
+                        market_torch.index_put_( {i,++j} , static_cast<float>(x) ) ;
+                    for ( const auto x : m.ask_sizes_ ) 
+                        market_torch.index_put_( {i,++j} , static_cast<float>(x) ) ;
+                    for ( const auto & x : m.bid_ages_ ) 
+                        market_torch.index_put_( {i,++j} , x ) ;
+                    for ( const auto & x : m.ask_ages_ ) 
+                        market_torch.index_put_( {i,++j} , x ) ;
+
+                }
+                SPDLOG_INFO("Stored : {}", market_data.size() );
+            } else { 
+                const auto & temp0 = market_torch.index( {0,0} ) ; 
+                const auto & temp1 = market_torch.index( {0,1} ) ; 
+                const auto & temp2 = market_torch.index( {1,0} ) ; 
+                float * f0 = temp0.data_ptr<float>();
+                float * f1 = temp1.data_ptr<float>();
+                float * f2 = temp2.data_ptr<float>();
+                size_t d01 = std::distance( f0, f1 );
+                size_t d02 = std::distance( f0, f2 );
+                if ( 1 == d01 and C == d02 ) { 
+                    SPDLOG_INFO( "distance: {}, {}", d01, d02 );
+                    for (size_t i = 0; i < end-start; ++i) { 
+                        const MarketState & m = market_data[i+start];
+                        size_t j = 0;
+                        f0[i*C+j] = static_cast<float>(m.time_*1e-9) ;
+                        for ( const auto x : m.bid_prices_ ) 
+                            f0[i*C + ++j] = static_cast<float>(x) ;
+                        for ( const auto x : m.ask_prices_ ) 
+                            f0[i*C + ++j] = static_cast<float>(x) ;
+                        for ( const auto x : m.bid_sizes_ ) 
+                            f0[i*C + ++j] = static_cast<float>(x) ;
+                        for ( const auto x : m.ask_sizes_ ) 
+                            f0[i*C + ++j] = static_cast<float>(x) ;
+                        for ( const auto & x : m.bid_ages_ ) 
+                            f0[i*C + ++j] = static_cast<float>(x) ;
+                        for ( const auto & x : m.ask_ages_ ) 
+                            f0[i*C + ++j] = static_cast<float>(x) ;
+
+                        if (std::isnan( m.wm_ )) { 
+
+                        } else {
+                            double wm_high_watermark = m.wm_ ;
+                            double wm_low_watermark = m.wm_ ;
+                            double sum_wmsq_dt = 0;
+                            double sum_wm_dt = 0;
+                            double sum_dt = 0;
+                            double wm_last = m.wm_ ; 
+                            double t_last = m.time_*1e-9; 
+                            for (size_t ii = start+i+1; ii < market_data.size(); ++ii) { 
+                                const MarketState & mi = market_data[ii];
+                                //SPDLOG_INFO( "dt {}, , wm {}, sum_wm_dt {}, sum_wmsq_dt {}, sum_dt {}", (mi.time_ - m.time_)*1e-9 , mi.wm_ , sum_wm_dt, sum_wmsq_dt, sum_dt );
+                                if (mi.time_ - m.time_ < static_cast<TimeType>( 1e9*1 ) ) {
+                                    if (not std::isnan(mi.wm_) ) { 
+                                        wm_high_watermark = std::max( mi.wm_, wm_high_watermark );
+                                        wm_low_watermark = std::min( mi.wm_, wm_low_watermark );
+                                        const double t_next = 1e-9*mi.time_;
+                                        const double dt =( t_next - t_last ); 
+                                        sum_wm_dt += wm_last * dt;
+                                        sum_wmsq_dt += wm_last * wm_last * dt;
+                                        sum_dt += dt;
+                                        wm_last = mi.wm_ ; 
+                                        t_last = t_next;
+                                        //SPDLOG_INFO("post dt {}", dt );
+                                    }
+                                    continue;
+                                } else
+                                    break;
+                            }
+
+                            const double mean = sum_wm_dt / sum_dt;  
+                            double var = sum_wmsq_dt / sum_dt - mean*mean ;
+                            if (var < -EPS) 
+                                throw std::runtime_error(
+                                        fmt::format("Negative var? sum mw : {}, sum sq mw : {}, sum dt : {}", 
+                                            sum_wm_dt, sum_wmsq_dt, sum_dt ) );
+                            if (var < EPS) var = EPS;
+                            const double stdev = std::sqrt( var );
+
+                            f0[i*C + ++j] = static_cast<float>(wm_last - m.wm_) ;
+                            f0[i*C + ++j] = static_cast<float>(wm_high_watermark - m.wm_) ;
+                            f0[i*C + ++j] = static_cast<float>(wm_low_watermark - m.wm_) ;
+                            f0[i*C + ++j] = static_cast<float>(mean - m.wm_) ;
+                            f0[i*C + ++j] = static_cast<float>(stdev) ;
+                            if (j+1 != C) 
+                                throw std::runtime_error( fmt::format(
+                                            "Not enough space: We allocated {} columns, but used {} columns.", 
+                                            C, j+1 ) );
+                        }
+                    }
+                    SPDLOG_INFO("Stored : {}", market_data.size() );
+
+                } else {
+                    SPDLOG_ERROR( "distance: {}, {}", d01, d02 );
+                }
+            }
+            const auto pickled = torch::pickle_save(market_torch);
+            SPDLOG_INFO("Pickled : {}", pickled.size() );
+            mkt_out_ptr->write( pickled.data(), pickled.size() );
+            SPDLOG_INFO("Written : {}", pickled.size() );
+        } 
+
     }
+
 }

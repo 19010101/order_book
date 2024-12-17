@@ -9,13 +9,20 @@
 #include <sstream>
 #include <boost/container_hash/hash.hpp>
 
-#include "memory_manager.h"
-
+#ifdef SPDLOG_ACTIVE_LEVEL 
+#undef SPDLOG_ACTIVE_LEVEL 
+#endif
 #define SPDLOG_ACTIVE_LEVEL SPDLOG_LEVEL_TRACE
+#ifndef SPDLOG_DEBUG_ON
 #define SPDLOG_DEBUG_ON
+#endif
+#ifndef SPDLOG_TRACE_ON
 #define SPDLOG_TRACE_ON
+#endif
 #include <spdlog/spdlog.h>
 #include <spdlog/fmt/bin_to_hex.h>
+
+#include "memory_manager.h"
 
 namespace SDB { 
     constexpr double EPS = 1e-10 ; 
@@ -380,6 +387,16 @@ namespace SDB {
             return n;
         }
 
+         float average_age(const TimeType now) const {
+            double age_sum = 0; 
+            int n = 0; 
+            for (const auto & o : orders_)
+                if (o.shown_size_>0) {
+                    age_sum += (now - o.creation_time_)*1e-9;
+                    ++n;
+                }
+            return age_sum/n;
+        }
 
         bool do_prices_agree( const Order & new_order ) const {
             if (side_ == new_order.side_) throw std::runtime_error("WTF");
@@ -584,6 +601,39 @@ namespace SDB {
                 while( it != all_offers_.end() and i < N ) {
                     ask_prices[i] = it->price_ ; 
                     ask_sizes[i] = it->total_shown() ; 
+                    ++i ; ++it ;
+                }
+            }
+        template<size_t N> 
+            void level25( 
+                    std::array<PriceType, N> & bid_prices, 
+                    std::array<SizeType, N> & bid_sizes, 
+                    std::array<float, N> & bid_ages, 
+                    std::array<PriceType, N> & ask_prices, 
+                    std::array<SizeType, N> & ask_sizes, 
+                    std::array<float, N> & ask_ages 
+                    ) const 
+            { 
+                bid_prices.fill(0);
+                ask_prices.fill(0);
+                bid_sizes.fill(0);
+                ask_sizes.fill(0);
+                bid_ages.fill(0);
+                ask_ages.fill(0);
+                size_t i = 0; 
+                auto it = all_bids_.begin();
+                while( it != all_bids_.end() and i < N ) {
+                    bid_prices[i] = it->price_ ; 
+                    bid_sizes[i] = it->total_shown() ; 
+                    bid_ages[i] = it->average_age(time_);
+                    ++i ; ++it ;
+                }
+                i = 0; 
+                it = all_offers_.begin();
+                while( it != all_offers_.end() and i < N ) {
+                    ask_prices[i] = it->price_ ; 
+                    ask_sizes[i] = it->total_shown() ; 
+                    ask_ages[i] = it->average_age(time_);
                     ++i ; ++it ;
                 }
             }

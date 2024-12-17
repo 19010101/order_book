@@ -1,9 +1,14 @@
 #include "random_walk.h"
 #include <catch2/catch_all.hpp>
 
+#ifndef SPDLOG_DEBUG_ON
 #define SPDLOG_DEBUG_ON
+#endif
+#ifndef SPDLOG_TRACE_ON
 #define SPDLOG_TRACE_ON
+#endif
 #include <spdlog/spdlog.h>
+
 
 #include <fstream>
 #include <numeric>
@@ -172,11 +177,13 @@ TEST_CASE( "price distribution", "[Agents]" ) {
 
 TEST_CASE( "experiment", "[Agents]" ) {
     using namespace SDB;
+    spdlog::set_level(spdlog::level::trace);
     boost::random::mt19937 mt(0);
     //std::ofstream mkt("mkt.txt");
     for (int i = 0; i < 100; ++i) {
+        std::ofstream torch(fmt::format("torch{:03d}.pt", i), std::ios::out|std::ios::binary);
         std::ofstream params(fmt::format("params{:03d}.txt", i));
-        experiment( mt, nullptr, &params );
+        experiment( mt, &torch, &params );
     }
 }
 
