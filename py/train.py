@@ -3,48 +3,57 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 
+import torchmetrics.functional 
+
+import glob
+import os.path
+
+
 class SequenceDataset(torch.utils.data.Dataset):
-    def __init__(self, seq_length=10, total_samples=1000):
-        self.seq_length = seq_length
-        self.total_samples = total_samples
+
+    n = 100_000
+
+    @staticmethod
+    def get_files( path ) : return sorted(glob.glob( os.path.join( path, "torch*.pt" ) ))
+
+    def __init__(self, path='../data'):
+        files = self.get_files( path )[0:10]
+        self.files = files[0:-1]
+        self.test_file = files[-1]
+        #self.n = 10_954_278
 
     def __len__(self):
-        return self.total_samples
+        return len(self.files)
 
     def __getitem__(self, idx):
-        # Generate random x sequence
-        x_seq = torch.rand(self.seq_length + 3) * 20 - 10  # Extra 3 for history
-        y_seq = torch.zeros(self.seq_length)
+        return self.get_file(self.files[idx])
 
-        # Compute y_i = 2x_i + (x_{i-1} + x_{i-2} + x_{i-3}) / 3
-        for i in range(3, self.seq_length + 3):
-            avg_prev_x = torch.mean(x_seq[i - 3:i])
-            y_seq[i - 3] = 2 * x_seq[i] + avg_prev_x + torch.randn(1) * 2  # Add noise
+    def get_file(self, fname ) : 
+        d = torch.load( fname , weights_only = True)
+        assert d.size(1)==30 
+        x = d[:self.n,0:25].clone() 
+        y = d[:self.n,  25].clone().unsqueeze(1) 
+        return x, y
 
-        # Prepare input and target sequences
-        x_input = x_seq[3:].unsqueeze(1)  # x_i
-        x_history = torch.stack([x_seq[2:-1], x_seq[1:-2], x_seq[0:-3]], dim=1)  # x_{i-1}, x_{i-2}, x_{i-3}
 
-        return x_input, x_history, y_seq.unsqueeze(1)
 
 class BaseSequenceModel(nn.Module):
     def __init__(self):
         super(BaseSequenceModel, self).__init__()
 
-    def forward(self, x_input, x_history):
+    def forward(self, x):
         raise NotImplementedError("Subclasses should implement this!")
 
 class LSTMSequenceModel(BaseSequenceModel):
     def __init__(self, input_size=4, hidden_size=16):
         super(LSTMSequenceModel, self).__init__()
-        self.rnn = nn.LSTM(input_size, hidden_size, batch_first=True)
-        self.fc = nn.Linear(hidden_size, 2)  # Outputs a_i and b_i
+        self.rnn = nn.LSTM(input_size, hidden_size,num_layers=2 , batch_first=True)
+        self.fc = nn.Linear(hidden_size, 1)  # Outputs a_i and b_i
 
-    def forward(self, x_input, x_history):
-        seq_input = torch.cat([x_input, x_history], dim=2)
-        output, _ = self.rnn(seq_input)
-        a_b = self.fc(output)
-        return a_b  # Shape: [batch_size, seq_length, 2]
+    def forward(self, x):
+        output, _ = self.rnn(x)
+        y = self.fc(output)
+        return y  
 
 class RNNSequenceModel(BaseSequenceModel):
     def __init__(self, input_size=4, hidden_size=16):
@@ -94,13 +103,11 @@ class TransformerSequenceModel(BaseSequenceModel):
         super(TransformerSequenceModel, self).__init__()
         self.input_linear = nn.Linear(input_size, hidden_size)
         self.positional_encoding = PositionalEncoding(hidden_size)
-        encoder_layer = nn.TransformerEncoderLayer(d_model=hidden_size, nhead=nhead)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=hidden_size, nhead=nhead,batch_first=True)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        self.output_linear = nn.Linear(hidden_size, 2)  # Outputs a_i and b_i
+        self.output_linear = nn.Linear(hidden_size, 1)  
 
-    def forward(self, x_input, x_history):
-        # Concatenate x_input and x_history: [batch_size, seq_length, input_size]
-        seq_input = torch.cat([x_input, x_history], dim=2)  # [batch_size, seq_length, input_size]
+    def forward(self, seq_input):
         # Transform to [seq_length, batch_size, input_size]
         seq_input = seq_input.permute(1, 0, 2)
         # Pass through input linear layer
@@ -110,13 +117,13 @@ class TransformerSequenceModel(BaseSequenceModel):
         # Pass through Transformer encoder
         output = self.transformer_encoder(seq_input)
         # Pass through output linear layer
-        a_b = self.output_linear(output)
+        y = self.output_linear(output)
         # Transform back to [batch_size, seq_length, 2]
-        a_b = a_b.permute(1, 0, 2)
-        return a_b
+        y = y.permute(1, 0, 2)
+        return y
 
 class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, max_len=5000):
+    def __init__(self, d_model, max_len=SequenceDataset.n):
         super(PositionalEncoding, self).__init__()
         # Compute the positional encodings once in log space.
         pe = torch.zeros(max_len, d_model)  # [max_len, d_model]
@@ -136,67 +143,63 @@ def train_model(model, dataloader, criterion, optimizer, num_epochs=10):
     model.train()
     for epoch in range(num_epochs):
         epoch_loss = 0.0
-        for x_input, x_history, y_true in dataloader:
+        for x, y_true in dataloader:
             optimizer.zero_grad()
-            a_b = model(x_input, x_history)
-            a_i = a_b[:, :, 0]
-            b_i = a_b[:, :, 1]
-            y_pred = a_i * x_input.squeeze(2) + b_i
-            loss = criterion(y_pred, y_true.squeeze(2))
+            y_pred = model(x)
+            print("train y_pred shape:", y_pred.shape)
+            loss = criterion(y_pred, y_true)
             loss.backward()
             optimizer.step()
             epoch_loss += loss.item()
         avg_loss = epoch_loss / len(dataloader)
         print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {avg_loss:.4f}')
+        if avg_loss < 0.1 : break
     return model
 
-def main(model_type='LSTM', seq_length=10, batch_size=32, num_epochs=10, learning_rate=0.001):
+def main(model_type='LSTM', seq_length=10, batch_size=32, num_epochs=500, learning_rate=0.001):
     # Create dataset and dataloader
-    dataset = SequenceDataset(seq_length=seq_length, total_samples=1000)
+    dataset = SequenceDataset()
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
     # Choose the model based on the argument
     if model_type == 'LSTM':
-        model = LSTMSequenceModel(input_size=4, hidden_size=16)
+        model = LSTMSequenceModel(input_size=25, hidden_size=16)
     elif model_type == 'RNN':
-        model = RNNSequenceModel(input_size=4, hidden_size=16)
+        model = RNNSequenceModel(input_size=25, hidden_size=16)
     elif model_type == 'GRU':
-        model = GRUSequenceModel(input_size=4, hidden_size=16)
+        model = GRUSequenceModel(input_size=25, hidden_size=16)
     elif model_type == 'CNN':
-        model = CNNSequenceModel(input_size=4, hidden_size=16, kernel_size=3)
+        model = CNNSequenceModel(input_size=25, hidden_size=16, kernel_size=3)
     elif model_type == 'Transformer':
-        model = TransformerSequenceModel(input_size=4, hidden_size=16, num_layers=2, nhead=4)
+        model = TransformerSequenceModel(input_size=25, hidden_size=16, num_layers=2, nhead=4)
     else:
         raise ValueError("Invalid model_type. Choose from 'LSTM', 'RNN', 'GRU', 'CNN', or 'Transformer'.")
 
     # Initialize loss function and optimizer
-    criterion = nn.MSELoss()
+    #criterion = nn.MSELoss()
+    def one_minus_r2( predictions, answers ) : 
+        return 1-torchmetrics.functional.r2_score( predictions.squeeze(), answers.squeeze() )
+    criterion = one_minus_r2
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
     print(f"\nTraining using {model_type} model:")
     # Train the model
-    trained_model = train_model(model, dataloader, criterion, optimizer, num_epochs)
+    _ = train_model(model, dataloader, criterion, optimizer, num_epochs)
 
     # Testing the model on a new sequence
     model.eval()
     with torch.no_grad():
         # Generate a test sample
-        x_input, x_history, y_true = dataset[0]
-        x_input = x_input.unsqueeze(0)  # Add batch dimension
-        x_history = x_history.unsqueeze(0)
+        x, y_true = dataset.get_file( dataset.test_file )
+        x = x.unsqueeze(0)  # Add batch dimension
         y_true = y_true.unsqueeze(0)
 
         # Predict a_i and b_i
-        a_b = model(x_input, x_history)
-        a_i = a_b[:, :, 0]
-        b_i = a_b[:, :, 1]
-        y_pred = a_i * x_input.squeeze(2) + b_i
+        y_pred = model(x)
+        loss = criterion(y_pred, y_true)
 
         # Print results
-        print("\nSample Predictions:")
-        for i in range(seq_length):
-            print(f"Time Step {i+1}: a_i = {a_i[0, i]:.4f}, b_i = {b_i[0, i]:.4f}, "
-                  f"y_true = {y_true[0, i].item():.4f}, y_pred = {y_pred[0, i].item():.4f}")
+        print("\nSample Predictions:", loss)
 
 if __name__ == '__main__':
     # You can change the model_type to 'LSTM', 'RNN', 'GRU', 'CNN', or 'Transformer'
