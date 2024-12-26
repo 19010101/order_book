@@ -292,17 +292,13 @@ namespace SDB {
                     << " uos:" << unacked_orders_.size() 
                     << "\n"; */
                 if (market_.time_ >= placement_time_ and
-                    orders_.size() + unacked_orders_.size() < n_orders_ and
-                    not std::isnan(market_.wm_)
+                    orders_.size() + unacked_orders_.size() < n_orders_ 
                 ) {
-                    //const auto price = safe_round<PriceType>(order_price_(mt_) + market_.wm_);
-                    //std::cerr << market_.time_ << ", market_.wm_: " << market_.wm_ << '\n';
-                    const double continuous_price = order_price_(mt_) + market_.wm_;
-                    //std::cerr << market_.time_ << ", continuous price: " << continuous_price << '\n';
+                    const double & wm = std::isnan(market_.wm_) ? 0 : market_.wm_; 
+                    const double continuous_price = order_price_(mt_) + wm;
                     const auto price = safe_round<PriceType>(continuous_price);
-                    //std::cerr << market_.time_ << ", price: " << price << '\n';
                     const bool aggressive = aggressive_(mt_);
-                    const Side passive_side = (price >= market_.wm_) ? Side::Offer : Side::Bid;
+                    const Side passive_side = (price >= wm) ? Side::Offer : Side::Bid;
                     const Side side = aggressive ? get_other_side(passive_side) : passive_side;
                     const LocalOrderIDType local_order_id = local_id_counter_++;
                     //std::cerr << "will place order with local id " << local_order_id << std::endl;
@@ -763,7 +759,7 @@ namespace SDB {
 
     struct RandomPriceMakerEnsemble { 
         std::vector<PriceMakerWithRandomParams> price_makers_;
-        MarketState market_{0, 0.0, {-1}, {10}, {0}, {1}, {10}, {0}};
+        MarketState market_{0, std::numeric_limits<double>::quiet_NaN(), {0}, {0}, {0}, {0}, {0}, {0}};
         RandomPriceMakerEnsemble(const size_t n_agents, boost::random::mt19937 & mt) { 
             for (size_t i = 0; i < n_agents; ++i ) 
                 price_makers_.emplace_back( i, market_, mt);
@@ -775,7 +771,7 @@ namespace SDB {
     
     struct FixedPriceMakerEnsemble { 
         std::vector<PriceMakerWithRandomParams> price_makers_;
-        MarketState market_{0, 0.0, {-1}, {10}, {0}, {1}, {10}, {0}};
+        MarketState market_{0, std::numeric_limits<double>::quiet_NaN(), {0}, {0}, {0}, {0}, {0}, {0}};
         FixedPriceMakerEnsemble (const size_t n_agents, boost::random::mt19937 & mt) { 
             for (size_t i = 0; i < n_agents; ++i ) 
                 price_makers_.emplace_back( i, market_, mt);
@@ -839,6 +835,9 @@ namespace SDB {
                 market.wm_ = static_cast<double>(market.bid_prices_[0] * market.ask_sizes_[0] +
                                                  market.ask_prices_[0] * market.bid_sizes_[0]) /
                              static_cast<double>(market.bid_sizes_[0] + market.ask_sizes_[0]);
+            else 
+                market.wm_ = std::numeric_limits<double>::quiet_NaN();
+
             if (mkt_out_ptr != nullptr)
                 market_data.emplace_back( market );
             //if (mkt_out_ptr != nullptr) *mkt_out_ptr << market.time_*1e-9/60./60. << ' ' << market.wm_ << '\n'  ;
