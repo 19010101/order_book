@@ -271,7 +271,11 @@ namespace SDB{
                     remaining_size_ -= traded_size;     
                     shown_size_ -= traded_size;     
                 }
-                notify.log( NotifyMessageType::Trade , *this, now, traded_size, traded_price );
+                //traded_size here is a positive number. 
+                //If our side is offer, we send -1xtraded_size to notif so that they reduce their positions:
+                notify.log( NotifyMessageType::Trade , *this, now,
+                        side_ == Side::Offer ? -traded_size : traded_size, 
+                        traded_price );
                 const bool finished = shown_size_==0;
                 if (finished) notify.log( NotifyMessageType::End, *this, now , 0, 0 );
             }

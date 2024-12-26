@@ -163,8 +163,9 @@ namespace SDB {
                     oid_iterator = orders_.find(oid);
                     if (oid_iterator  == orders_.end())
                         throw std::runtime_error("Cannot find oid (t): " + std::to_string(oid));
-                    else 
-                        oid_iterator->remaining_size_ -= traded_size; 
+                    else {
+                        oid_iterator->remaining_size_ -= std::abs(traded_size); 
+                    }
                     break;
                 case NotifyMessageType::Cancel : 
                     oid_iterator = orders_.find(oid);
@@ -335,8 +336,7 @@ namespace SDB {
                 auto & index = cancellation_times_.get<0>() ; 
                 //if (not index.empty()) std::cerr << "time: " << market_.time_ << ", cancellation time:" << index.begin()->t_cancel_ << "\n";
                 while( not index.empty() and market_.time_ >= index.begin()->t_cancel_ ) {
-                    SPDLOG_TRACE("cancelling oid: 0x{:xspn} at time: ", spdlog::to_hex(index.begin()->order_id_),
-                        index.begin()->t_cancel_);
+                    //SPDLOG_TRACE("cancelling oid: 0x{:xspn} at time: ", spdlog::to_hex(index.begin()->order_id_), index.begin()->t_cancel_);
                     orders_.find( index.begin()->order_id_ )->waiting_to_be_cancelled_ = true;
                     const auto order_id = index.begin()->order_id_;
                     index.erase(index.begin());
@@ -363,8 +363,7 @@ namespace SDB {
                         break;
                     }
                 case NotifyMessageType::Trade : 
-                    if (client_id_ == 9)
-                        SPDLOG_INFO("trade size {} price {}", trade_size, trade_price );
+                    //SPDLOG_INFO("trade size {} price {}", trade_size, trade_price );
                     break;
             }
         }
@@ -461,13 +460,54 @@ namespace SDB {
                 Agent<SingleInstrumentMarketMaker>(client_id, market),
                 local_id_counter_(0), position_(0) {}
         template <TransportConcept Transport>
-            void handle_market_state_changed(Transport & ) {
+            void handle_market_state_changed(Transport & transport) {
                 if (std::isnan(market_.wm_)) return;
                 if (position_ == 0) {
                     //make sure we are in the market at best bid and best offer.
                 } else {
-                    //cancel all passive orders;
-                    //send and aggresive order to get out of the position
+                    const Side side_to_place = (position_<0) ? Side::Bid : Side::Offer;
+                    const PriceType price = ( side_to_place == Side::Bid ) ? 
+                            ( ( market_.wm_ - market_.bid_prices_[0] < 0.8 ) ? market_.bid_prices_[0] : market_.bid_prices_[0] + 1 ) : 
+                            ( ( market_.ask_prices_[0] - market_.wm_ < 0.8 ) ? market_.ask_prices_[0] : market_.ask_prices_[0] - 1 ) ;
+                    SizeType wanted = std::abs( position_ ); 
+                    SPDLOG_INFO("wanted {} {}@{}", side_to_place, wanted, price ); 
+                    for (auto & od : orders_) 
+                        if ( od.side_ == side_to_place and od.price_ == price ) { 
+                            if (wanted >= od.remaining_size_)
+                                wanted -= od.remaining_size_ ; 
+                            else {
+                                SPDLOG_ERROR("implement amends!");
+                                SPDLOG_INFO("cancelling 0x{:xspn} od cid {} with remaining size {}",
+                                        spdlog::to_hex(od.order_id_), client_id_, od.remaining_size_ ); 
+                                if (not od.waiting_to_be_cancelled_) {
+                                    od.waiting_to_be_cancelled_ = true;
+                                    transport.cancel( client_id_ , od.order_id_ );
+                                }
+                                wanted = 0; 
+                            }
+                        } else if (not od.waiting_to_be_cancelled_) {
+                            SPDLOG_INFO("cancelling 0x{:xspn} od cid {} with remaining size {}",
+                                    spdlog::to_hex(od.order_id_), client_id_, od.remaining_size_ ); 
+                            od.waiting_to_be_cancelled_ = true;
+                            transport.cancel( client_id_ , od.order_id_ );
+                        }
+                    for (auto & od : unacked_orders_ )
+                        if ( od.side_ == side_to_place and od.price_ == price ) { 
+                            if (wanted >= od.remaining_size_)
+                                wanted -= od.remaining_size_ ; 
+                            else {
+                                SPDLOG_ERROR("implement amends!");
+                                wanted = 0; 
+                            }
+                        }
+                    if (wanted>0) {
+                        SPDLOG_INFO("cid {} placing order {} {}@{}", client_id_, side_to_place, wanted , price ); 
+                        auto [fst, snd] = unacked_orders_.emplace(
+                                ++local_id_counter_, price, wanted , 2, side_to_place);
+                        if (not snd) throw std::runtime_error(
+                                "Problem placing un-acked order in map: " + std::to_string(local_id_counter_));
+                        transport.place_order(client_id_, *fst);
+                    }
                 }
         }
         void handle_message( const OrderData & , const NotifyMessageType , const SizeType size, const PriceType) {
@@ -485,6 +525,7 @@ namespace SDB {
             TimeType delay_ ;
             std::unordered_map<ClientIDType, PriceMakerAroundWM *> price_makers ;
             std::unordered_map<ClientIDType, TrendFollowerAgent *> trend_followers ;
+            std::unordered_map<ClientIDType, SingleInstrumentMarketMaker *> single_instrument_market_makers_ ;
             std::vector<std::tuple<TimeType,ClientIDType, OrderData>> orders_to_place;
             std::vector<std::tuple<TimeType,OrderIDType>> orders_to_cancel;
             std::unordered_map<ClientIDType, std::unordered_map<PriceType, int> > price_counts;
@@ -495,11 +536,18 @@ namespace SDB {
 
             bool add_agent( PriceMakerAroundWM & agent ) {
                 if (trend_followers.contains( agent.client_id_ )) return false;
+                if (single_instrument_market_makers_.contains( agent.client_id_ )) return false;
                 return price_makers.emplace( agent.client_id_, &agent ).second;
             }
             bool add_agent( TrendFollowerAgent & agent ) {
                 if (price_makers.contains( agent.client_id_ )) return false;
+                if (single_instrument_market_makers_.contains( agent.client_id_ )) return false;
                 return trend_followers.emplace( agent.client_id_, &agent ).second;
+            }
+            bool add_agent( SingleInstrumentMarketMaker & agent ) {
+                if (price_makers.contains( agent.client_id_ )) return false;
+                if (trend_followers.contains( agent.client_id_ )) return false;
+                return single_instrument_market_makers_.emplace( agent.client_id_, &agent ).second;
             }
 
             void place_order( const ClientIDType cid, const OrderData & od ) {
@@ -566,6 +614,10 @@ namespace SDB {
                         ) ||
                         find_and_handle_order_message(
                             trend_followers, o.client_id_, mtype,
+                            o.local_id_, o.order_id_, trade_size, trade_price
+                        ) ||
+                        find_and_handle_order_message(
+                            single_instrument_market_makers_, o.client_id_, mtype,
                             o.local_id_, o.order_id_, trade_size, trade_price
                         ) ;
                 if (not done)
@@ -759,6 +811,7 @@ namespace SDB {
 
     struct RandomPriceMakerEnsemble { 
         std::vector<PriceMakerWithRandomParams> price_makers_;
+        std::vector<SingleInstrumentMarketMaker> single_instrument_market_makers_ ; 
         MarketState market_{0, std::numeric_limits<double>::quiet_NaN(), {0}, {0}, {0}, {0}, {0}, {0}};
         RandomPriceMakerEnsemble(const size_t n_agents, boost::random::mt19937 & mt) { 
             for (size_t i = 0; i < n_agents; ++i ) 
@@ -771,6 +824,7 @@ namespace SDB {
     
     struct FixedPriceMakerEnsemble { 
         std::vector<PriceMakerWithRandomParams> price_makers_;
+        std::vector<SingleInstrumentMarketMaker> single_instrument_market_makers_ ; 
         MarketState market_{0, std::numeric_limits<double>::quiet_NaN(), {0}, {0}, {0}, {0}, {0}, {0}};
         FixedPriceMakerEnsemble (const size_t n_agents, boost::random::mt19937 & mt) { 
             for (size_t i = 0; i < n_agents; ++i ) 
@@ -796,6 +850,7 @@ namespace SDB {
         MarketState & market = ensemble.market_;
         PassThroughTransport<LogNotify> transport(eng, LogNotify::instance(), 0.0);
         for( auto & pm : ensemble.price_makers_) transport.add_agent(pm.pm_);
+        for( auto & pm : ensemble.single_instrument_market_makers_) transport.add_agent(pm);
         const std::vector<TrendFollowerAgent> trend_followers;
         std::vector<MarketState> market_data; 
 
@@ -823,6 +878,7 @@ namespace SDB {
             market.time_ = t;
             eng.time_ = market.time_;
             for (auto & a : ensemble.price_makers_) a.pm_.markets_state_changed(transport);
+            for (auto & a : ensemble.single_instrument_market_makers_) a.markets_state_changed(transport);
             transport.send(market.time_);
             if (transport.next_send_time() <= market.time_)
                 throw std::runtime_error(std::format("Transport next send time should have moved : {} - {}",
@@ -859,12 +915,12 @@ namespace SDB {
                         sum_size += pm.order_size_mean();
                         sumsq_size += pm.order_size_mean()*pm.order_size_mean();
                     }
-                    const double mean_cancel = sum_cancel/ensemble.price_makers_.size();
-                    const double std_cancel = std::sqrt(sumsq_cancel/ensemble.price_makers_.size() - mean_cancel*mean_cancel);
+                    //const double mean_cancel = sum_cancel/ensemble.price_makers_.size();
+                    //const double std_cancel = std::sqrt(sumsq_cancel/ensemble.price_makers_.size() - mean_cancel*mean_cancel);
                     const double mean_price = sum_price/ensemble.price_makers_.size();
-                    const double std_price = std::sqrt(sumsq_price/ensemble.price_makers_.size() - mean_price*mean_price);
-                    const double mean_size = sum_size/ensemble.price_makers_.size();
-                    const double std_size = std::sqrt(sumsq_size/ensemble.price_makers_.size() - mean_size*mean_size);
+                    //const double std_price = std::sqrt(sumsq_price/ensemble.price_makers_.size() - mean_price*mean_price);
+                    //const double mean_size = sum_size/ensemble.price_makers_.size();
+                    //const double std_size = std::sqrt(sumsq_size/ensemble.price_makers_.size() - mean_size*mean_size);
 
                     *params_out_ptr << last_param_update_time/60./60. << ' ' << market.wm_ 
                         //<< ' ' <<  mean_cancel << ' ' << std_cancel

@@ -1,3 +1,4 @@
+#include "ob.h"
 #include "random_walk.h"
 #include <boost/random/bernoulli_distribution.hpp>
 #include <catch2/catch_all.hpp>
@@ -237,26 +238,37 @@ namespace SDB {
     struct SwitchEnsemble : public FixedPriceMakerEnsemble { 
         boost::random::mt19937 & mt_;
         boost::random::exponential_distribution<> switch_distribution_;
-        boost::random::bernoulli_distribution<> buy_sell_distribution_;
-        std::vector<double> switch_times_ ;
-        std::vector<double>::const_iterator it_;
+        boost::random::bernoulli_distribution<> buy_sell_distribution_, single_imnt_buy_sell_distribution_;
+        std::vector<double> switch_times_, single_imnt_times_ ;
+        std::vector<double>::const_iterator it_, single_imnt_it_;
+        bool simm_started_ ;
         SwitchEnsemble( const size_t n_agents, boost::random::mt19937 & mt, 
                 const double switch_lambda, const double t_max) : 
             FixedPriceMakerEnsemble(n_agents, mt ) , 
             mt_(mt),
             switch_distribution_(switch_lambda), 
-            buy_sell_distribution_(0.5)
+            buy_sell_distribution_(0.5), 
+            single_imnt_buy_sell_distribution_(0.5), 
+            simm_started_(false)
             {
                 while (switch_times_.empty() or switch_times_.back() < t_max ) 
                     switch_times_.push_back( 
                             switch_distribution_(mt) + 
                             (switch_times_.empty() ? 0 : switch_times_.back()) );
-                it_ = switch_times_.begin();
+                while (single_imnt_times_.empty() or single_imnt_times_.back() < t_max ) 
+                    single_imnt_times_.push_back( 
+                            switch_distribution_(mt) + 
+                            (single_imnt_times_.empty() ? 0 : single_imnt_times_.back()) );
+                single_imnt_it_ = single_imnt_times_.begin();
 
                 for (auto & pm : price_makers_) 
                     pm.pm_.aggressive_.param( 
                             boost::random::bernoulli_distribution<double>::param_type( 0.0 ) 
                             );
+                ClientIDType cid = std::numeric_limits<ClientIDType>::min();
+                for (auto & pm :  price_makers_)  cid = std::max(cid, pm.pm_.client_id_ );
+                ++cid ;
+                single_instrument_market_makers_.emplace_back(cid, market_ );
             } 
         bool do_update() {
             bool update = false;
@@ -265,6 +277,14 @@ namespace SDB {
                 //SPDLOG_INFO( "will update it : {} , time : {}", *it_ , 1e-9*market_.time_/60./60. );
                 update = true; 
                 ++it_ ; 
+            }
+            return update;
+        }
+        bool do_update_single_imnt() {
+            bool update = false;
+            while (single_imnt_it_ != single_imnt_times_.end() and 1e-9*market_.time_ > *single_imnt_it_ ) {
+                update = true; 
+                ++single_imnt_it_ ; 
             }
             return update;
         }
@@ -281,7 +301,19 @@ namespace SDB {
                         );
         }
         void update( const double ) { 
+            if (false and not simm_started_ and market_.time_>static_cast<TimeType>(1e9*120) ) {
+                SPDLOG_INFO( "starting at time {}", market_.time_ );
+                single_instrument_market_makers_.front().position_ = 10; 
+                simm_started_ = true;
+            }
             //if (do_update()) adjust_directional_agents();
+            if (do_update_single_imnt()) {
+                const SizeType size = single_imnt_buy_sell_distribution_(mt_) ? 10 : -10;
+                single_instrument_market_makers_.front().position_ += size;
+                SPDLOG_INFO( "dpos at time {}, new pos: {}, final pos: {}", 
+                        market_.time_*1e-9, 
+                        size, single_instrument_market_makers_.front().position_);
+            };
         }
         void update( 
                 const double cancellation_period, 
@@ -331,7 +363,7 @@ TEST_CASE( "experiment2", "[Agents]" ) {
 
 TEST_CASE( "experiment3", "[Agents]" ) {
     using namespace SDB;
-    spdlog::set_level(spdlog::level::trace);
+    spdlog::set_level(spdlog::level::info);
     boost::random::mt19937 mt(0);
     constexpr int ndays = 1;
     constexpr double t_max = ndays*2*60*60 ; //seconds
