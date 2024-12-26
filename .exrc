@@ -1,6 +1,5 @@
-" set makeprg="xx"
-set makeprg=cmake\ --build\ debug\ --target\ tests_rng\ &&\ ./debug/tests_rng\ experiment
-" unlet errorformat
+" set makeprg=cmake\ --build\ release\ --target\ tests_rng&&./release/tests_rng\ experiment2
+let g:neovide_disable_all_animations = 1
 set errorformat=
       \%*[^\"]\"%f\"%*\\D%l:%c:\ %m,
       \%*[^\"]\"%f\"%*\\D%l:\ %m,

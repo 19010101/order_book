@@ -24,12 +24,12 @@ find_package(spdlog REQUIRED)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
 
 add_executable(main ${SOURCE_FILES})
-target_link_libraries(main PUBLIC Boost::boost spdlog::spdlog_header_only)
+target_link_libraries(main PUBLIC Boost::boost spdlog::spdlog_header_only "${TORCH_LIBRARIES}")
 #target_include_directories(main PRIVATE ${Boost_INCLUDE_DIRS} spd)
 
 add_executable(tests src/test.C)
 #target_include_directories(tests PRIVATE ${Boost_INCLUDE_DIRS})
-target_link_libraries(tests PUBLIC Catch2::Catch2WithMain Boost::boost spdlog::spdlog_header_only)
+target_link_libraries(tests PUBLIC Catch2::Catch2WithMain Boost::boost spdlog::spdlog_header_only "${TORCH_LIBRARIES}")
 
 add_executable(tests_rng src/tests_rng.C)
 target_link_libraries(tests_rng PUBLIC Catch2::Catch2WithMain Boost::boost spdlog::spdlog_header_only "${TORCH_LIBRARIES}")

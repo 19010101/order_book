@@ -9,6 +9,9 @@
 #include <sstream>
 #include <boost/container_hash/hash.hpp>
 
+#include <iomanip>
+
+
 #ifdef SPDLOG_ACTIVE_LEVEL 
 #undef SPDLOG_ACTIVE_LEVEL 
 #endif
@@ -219,7 +222,11 @@ namespace SDB{
         }
 
         template <INotifier N>
-            void replenish( N & notify, const TimeType t) const { 
+            void replenish( N & notify, const TimeType t) const {
+                if (remaining_size_ < 0)
+                    throw std::logic_error(fmt::format("negative remaining size: {}", remaining_size_));
+                if (show_ < 0)
+                    throw std::logic_error(fmt::format("negative show: {}", show_));
                 if (shown_size_ != 0)
                     throw std::runtime_error("Cannot replenish like this!");
                 shown_size_ =  std::min(show_,remaining_size_) ;
@@ -293,6 +300,61 @@ namespace SDB{
         using PtrSet = std::unordered_multiset< Order*, Order::Hash, Order::Eq>;
 
     };
+    struct MarketState { 
+        TimeType time_ ; 
+        double wm_ ;
+        std::array<PriceType, 4> bid_prices_;
+        std::array<SizeType, 4>  bid_sizes_;
+        std::array<float, 4> bid_ages_;
+        std::array<PriceType, 4> ask_prices_;
+        std::array<SizeType, 4>  ask_sizes_;
+        std::array<float, 4> ask_ages_;
+    };
+
+    inline std::ostream & operator<<(std::ostream & out, const MarketState & market ) {
+        out << std::right << std::fixed << std::setw(15)<<  std::setprecision(9) << static_cast<double>(market.time_) * 1e-9
+                << ' '
+                << std::right  << std::setw(3)<<  market.bid_sizes_[2]
+                << "b@"
+                << std::left << std::setw(3)<<  market.bid_prices_[2]
+                << "age" 
+                << std::left << std::setw(3)<<  market.bid_ages_[2]
+                << ' '
+                << std::right  << std::setw(3)<<  market.bid_sizes_[1]
+                << "b@"
+                << std::left << std::setw(3)<<  market.bid_prices_[1]
+                << "age" 
+                << std::left << std::setw(3)<<  market.bid_ages_[1]
+                << ' '
+                << std::right  << std::setw(3)<<  market.bid_sizes_[0]
+                << "b@"
+                << std::left << std::setw(3)<<  market.bid_prices_[0]
+                << "age" 
+                << std::left << std::setw(3)<<  market.bid_ages_[0]
+                << "  wm:"
+                << std::fixed << std::setw(5)<<  std::setprecision(2) << market.wm_
+                << ' '
+                << std::right  << std::setw(3)<<  market.ask_sizes_[0]
+                << "a@"
+                << std::left << std::setw(3)<<  market.ask_prices_[0]
+                << "age" 
+                << std::left << std::setw(3)<<  market.ask_ages_[0]
+                << ' '
+                << std::right  << std::setw(3)<<  market.ask_sizes_[1]
+                << "a@"
+                << std::left << std::setw(3)<<  market.ask_prices_[1]
+                << "age" 
+                << std::left << std::setw(3)<<  market.ask_ages_[1]
+                << ' '
+                << std::right  << std::setw(3)<<  market.ask_sizes_[2]
+                << "a@"
+                << std::left << std::setw(3)<<  market.ask_prices_[2] 
+                << "age" 
+                << std::left << std::setw(3)<<  market.ask_ages_[2]
+                ;
+        return out;
+    }
+
 
 }
 
@@ -397,6 +459,16 @@ namespace SDB {
                 }
             return age_sum/n;
         }
+         float max_age(const TimeType now) const {
+            double max_age = std::numeric_limits<double>::lowest();
+            for (const auto & o : orders_)
+                if (o.shown_size_>0)
+                    max_age = std::max( max_age, (now - o.creation_time_)*1e-9 );
+            return max_age;
+        }
+         float num_orders(const TimeType ) const {
+            return orders_.size();
+        }
 
         bool do_prices_agree( const Order & new_order ) const {
             if (side_ == new_order.side_) throw std::runtime_error("WTF");
@@ -447,8 +519,12 @@ namespace SDB {
                 OrderIDType oid, TimeType t, ClientIDType cid, LocalOrderIDType lid, PriceType p, SizeType s, SizeType show, Side side, bool is_shadow,
                 N & notify
                 ) {
+            if (s<0)
+                throw std::logic_error(fmt::format("negative order size in a new order: {}", s));
             Order & o = mem.get_unused();
             o.reset(oid, t, cid, lid, p, s, show, side, is_shadow, notify);
+            if (o.remaining_size_<0)
+                throw std::logic_error(fmt::format("negative remaining size in a new order: {}", o.remaining_size_));
             //notify.log( NotifyMessageType::Ack , o, t, 0, 0 );
             return o;
         }
@@ -646,6 +722,37 @@ namespace SDB {
                 return std::numeric_limits<double>::quiet_NaN(); 
             else
                 return double(bid_prices[0]*ask_sizes[0] + ask_prices[0]*bid_sizes[0])/double(tot);
+        }
+    };
+    struct LogNotify {
+        MarketState market_;
+        static void log( const NotifyMessageType mtype , const Order & o, const TimeType t, const SizeType trade_size,
+                const PriceType trade_price) {
+            //if (false) 
+            SPDLOG_INFO( "t: {:12.9f} {}, cid:{}, age:{:12.9f}, side:{}, price:{:03d}, rs:{:05d}, ts:{}, tp:{}, oid:0x{:xspn}", 
+                    t*1e-9, mtype, o.client_id_ , 
+                    1e-9*(t-o.creation_time_), o.side_, 
+                    o.price_, 
+                    o.remaining_size_, trade_size, trade_price, 
+                    spdlog::to_hex( o.order_id_ )
+                    );
+        }
+        void log( const MatchingEngine & eng ) {
+            market_.time_ = eng.time_ ;
+            eng.level25(
+                market_.bid_prices_, market_.bid_sizes_, market_.bid_ages_,
+                market_.ask_prices_, market_.ask_sizes_, market_.ask_ages_
+            );
+            std::ostringstream ss; 
+            ss << market_ ; 
+            SPDLOG_INFO ("{}", ss.str() );
+        }
+        static void error( const OrderIDType & oid , const std::string & msg) {
+            SPDLOG_ERROR( "0x{:xspn}: {}" , spdlog::to_hex(oid), msg);
+        }
+        static LogNotify & instance(){ 
+            static LogNotify n; 
+            return n;
         }
     };
     template<typename T> 

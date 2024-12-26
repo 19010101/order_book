@@ -14,55 +14,12 @@
 #include <boost/multi_index/hashed_index.hpp>
 #include <boost/multi_index/member.hpp>
 
-#include <iomanip>
-
 #include <ATen/ATen.h>
+#include <sstream>
 #include <torch/serialize.h>
 #include <torch/torch.h>
 
 namespace SDB {
-
-    struct MarketState { 
-        TimeType time_ ; 
-        double wm_ ;
-        std::array<PriceType, 4> bid_prices_;
-        std::array<SizeType, 4>  bid_sizes_;
-        std::array<float, 4> bid_ages_;
-        std::array<PriceType, 4> ask_prices_;
-        std::array<SizeType, 4>  ask_sizes_;
-        std::array<float, 4> ask_ages_;
-    };
-
-    inline std::ostream & operator<<(std::ostream & out, const MarketState & market ) {
-        out << std::right << std::fixed << std::setw(15)<<  std::setprecision(9) << static_cast<double>(market.time_) * 1e-9
-                << ' '
-                << std::right  << std::setw(3)<<  market.bid_sizes_[2]
-                << "b@"
-                << std::left << std::setw(3)<<  market.bid_prices_[2]
-                << ' '
-                << std::right  << std::setw(3)<<  market.bid_sizes_[1]
-                << "b@"
-                << std::left << std::setw(3)<<  market.bid_prices_[1]
-                << ' '
-                << std::right  << std::setw(3)<<  market.bid_sizes_[0]
-                << "b@"
-                << std::left << std::setw(3)<<  market.bid_prices_[0]
-                << "  wm:"
-                << std::fixed << std::setw(5)<<  std::setprecision(2) << market.wm_
-                << ' '
-                << std::right  << std::setw(3)<<  market.ask_sizes_[0]
-                << "a@"
-                << std::left << std::setw(3)<<  market.ask_prices_[0]
-                << ' '
-                << std::right  << std::setw(3)<<  market.ask_sizes_[1]
-                << "a@"
-                << std::left << std::setw(3)<<  market.ask_prices_[1]
-                << ' '
-                << std::right  << std::setw(3)<<  market.ask_sizes_[2]
-                << "a@"
-                << std::left << std::setw(3)<<  market.ask_prices_[2] ;
-        return out;
-    }
 
     struct OrderData { 
         LocalOrderIDType local_id_;
@@ -298,7 +255,7 @@ namespace SDB {
                 placement_(placement_lambda), 
                 cancellation_(cancellation_lambda) , 
                 order_price_(order_price_mean, order_price_std ),
-                order_size_(order_size_mean),
+                order_size_(std::min(static_cast<SizeType>(order_size_mean), std::numeric_limits< SizeType >::max() )),
                 aggressive_(aggressive_probability),
                 n_orders_(n_orders)
         {
@@ -345,12 +302,33 @@ namespace SDB {
                     const auto price = safe_round<PriceType>(continuous_price);
                     //std::cerr << market_.time_ << ", price: " << price << '\n';
                     const bool aggressive = aggressive_(mt_);
-                    const Side passive_side = (continuous_price >= market_.wm_) ? Side::Offer : Side::Bid;
+                    const Side passive_side = (price >= market_.wm_) ? Side::Offer : Side::Bid;
                     const Side side = aggressive ? get_other_side(passive_side) : passive_side;
                     const LocalOrderIDType local_order_id = local_id_counter_++;
                     //std::cerr << "will place order with local id " << local_order_id << std::endl;
+                    auto order_size = order_size_(mt_);
+                    if (order_size < 0 ) {
+                        //SPDLOG_ERROR("negative order size from poisson distribution, client id {}", client_id_);
+                        order_size = std::numeric_limits<SizeType>::max();
+                    }
+                    if (order_size > std::numeric_limits<SizeType>::max() ) 
+                        throw std::logic_error("orer size from poisson distribution is too big");
+                    if (order_size == 0) order_size = 1;
+                    if (false)  {
+                        SPDLOG_INFO( "t: {}, cid:{}, wm : {}, p:{}({}) , p-wm: {}, bb-p: {}, p-ba: {}, s: {}, side: {}, aggressive:{}", 
+                                market_.time_*1e-9,
+                                client_id_,
+                                market_.wm_ ,  
+                                continuous_price,  price,
+                                price - market_.wm_,
+                                market_.bid_prices_[0] - price, 
+                                price - market_.ask_prices_[0] , 
+                                order_size , side, aggressive);
+                        SPDLOG_INFO( "bid ages: {}", fmt::join( market_.bid_ages_ , " " ) );
+                        SPDLOG_INFO( "ask ages: {}", fmt::join( market_.ask_ages_ , " " ) );
+                    }
                     auto [fst, snd] = unacked_orders_.emplace(
-                        local_order_id, price, 1 + order_size_(mt_), 2, side);
+                        local_order_id, price, order_size , 2, side);
                     if (not snd) throw std::runtime_error(
                         "Problem placing un-acked order in map: " + std::to_string(local_order_id));
                     transport.place_order(client_id_, *fst);
@@ -372,7 +350,7 @@ namespace SDB {
             }
 
         void handle_message( const OrderData & order_data, const NotifyMessageType mtype, 
-                const SizeType , const PriceType  ) {
+                const SizeType trade_size, const PriceType trade_price  ) {
             switch (mtype) {
                 case NotifyMessageType::Ack : 
                     { 
@@ -389,6 +367,8 @@ namespace SDB {
                         break;
                     }
                 case NotifyMessageType::Trade : 
+                    if (client_id_ == 9)
+                        SPDLOG_INFO("trade size {} price {}", trade_size, trade_price );
                     break;
             }
         }
@@ -635,6 +615,7 @@ namespace SDB {
                 throw std::runtime_error(std::format("Cannot add agent: {}", a.client_id_) );
 
         while ( market.time_ <= t_max) {
+            transport.log( eng );
             for (auto &pm: price_makers)
                 pm.update_next_action_time();
             const TimeType t_algo = get_min_time( price_makers, trend_followers ) ;
@@ -749,27 +730,30 @@ namespace SDB {
                     range_bound(order_size_.x_, order_size_min_, order_size_max_, 
                         order_size_center_shift_),
                     0.05, 10 ) {}
-        void update( const double dt )  {
-            /*
-            pm_.cancellation_.param( 
-                    sln(cancellation_.update( dt, mt_ ),
-                        freq_center_, freq_width_, freq_lower_limit_));
-                        */
-            pm_.cancellation_.param( 
-                    1/range_bound(cancellation_.update( dt, mt_ ),
-                        period_min_, period_max_, 
-                        period_center_shift_)    
-                    ) ;
-                       
+        void update( 
+                const double cancellation_period, 
+                const double price_mean,  
+                const double order_size_mean ) { 
+            pm_.cancellation_.param( 1/cancellation_period  ) ;
             pm_.order_price_.param( 
                     boost::random::normal_distribution<double>::param_type(
-                        price_mean_.update( dt, mt_ ), pm_.order_price_.sigma() ) );
+                        price_mean, pm_.order_price_.sigma() ) );
             pm_.order_size_.param(
                     boost::random::poisson_distribution<SizeType, double>::param_type( 
-                        range_bound(order_size_.update(dt, mt_), 
-                            order_size_min_, order_size_max_, 
-                            order_size_center_shift_)    ) 
+                        order_size_mean    ) 
                     );
+        }
+
+        void update( const double dt )  {
+            update( 
+                    range_bound(cancellation_.update( dt, mt_ ),
+                        period_min_, period_max_, 
+                        period_center_shift_)    , 
+                    price_mean_.update( dt, mt_ ), 
+                    range_bound(order_size_.update(dt, mt_), 
+                        order_size_min_, order_size_max_, 
+                        order_size_center_shift_)   
+                  );
         }
         double get_cancellation_period() const { return 1./pm_.cancellation_.lambda(); }
         double get_order_price_mean() const { return pm_.order_price_.mean() ; }
@@ -777,30 +761,61 @@ namespace SDB {
     };
 
 
-    inline void experiment(boost::random::mt19937 & mt, std::ostream * mkt_out_ptr, std::ostream * params_out_ptr) {
-        std::vector<PriceMakerWithRandomParams> price_makers;
-        constexpr size_t n_agents = 100;
-        price_makers.reserve( n_agents );
-        MarketState market{0, 0.0, {-1}, {10}, {0}, {1}, {10}, {0}};
-        for (size_t i = 0; i < n_agents; ++i ) 
-            price_makers.emplace_back( i, market, mt);
+    struct RandomPriceMakerEnsemble { 
+        std::vector<PriceMakerWithRandomParams> price_makers_;
+        MarketState market_{0, 0.0, {-1}, {10}, {0}, {1}, {10}, {0}};
+        RandomPriceMakerEnsemble(const size_t n_agents, boost::random::mt19937 & mt) { 
+            for (size_t i = 0; i < n_agents; ++i ) 
+                price_makers_.emplace_back( i, market_, mt);
+        }
+        void  update(const double dt) { 
+            for (auto & pm : price_makers_) pm.update(dt);
+        }
+    };
+    
+    struct FixedPriceMakerEnsemble { 
+        std::vector<PriceMakerWithRandomParams> price_makers_;
+        MarketState market_{0, 0.0, {-1}, {10}, {0}, {1}, {10}, {0}};
+        FixedPriceMakerEnsemble (const size_t n_agents, boost::random::mt19937 & mt) { 
+            for (size_t i = 0; i < n_agents; ++i ) 
+                price_makers_.emplace_back( i, market_, mt);
+            for (size_t i = 0; i < n_agents; ++i ) 
+                price_makers_[i].update( 10,  (i%2) ? 1 : -1 , 10 ); 
+        }
+        void  update(const double ) { }
+        void update( 
+                const double cancellation_period, 
+                const double price_mean,  
+                const double order_size_mean ) { 
+            for (auto & pm : price_makers_) pm.update(cancellation_period, price_mean, order_size_mean);
+        }
+    };
+
+    template <typename Ensemble>
+    inline void experiment(boost::random::mt19937 & mt, std::ostream * mkt_out_ptr, std::ostream * params_out_ptr, 
+            Ensemble & ensemble, 
+            const TimeType t_max = static_cast<TimeType>( 1e9*24*60*60 )
+    ) {
         MatchingEngine  eng;
-        PassThroughTransport<NOOPNotify> transport(eng, NOOPNotify::instance(), 0.0);
-        for( auto & pm : price_makers) transport.add_agent(pm.pm_);
+        MarketState & market = ensemble.market_;
+        PassThroughTransport<LogNotify> transport(eng, LogNotify::instance(), 0.0);
+        for( auto & pm : ensemble.price_makers_) transport.add_agent(pm.pm_);
         const std::vector<TrendFollowerAgent> trend_followers;
-
-        constexpr TimeType t_max = static_cast<TimeType>( 1e9 * 60*60*24 );
-
         std::vector<MarketState> market_data; 
 
         double last_param_update_time = std::numeric_limits<double>::quiet_NaN();
 
         while ( market.time_ <= t_max) {
-            for (auto &pm: price_makers)
+            {
+                std::ostringstream out ;
+                out << market;
+                SPDLOG_INFO( "{}", out.str() );
+            }
+            for (auto &pm: ensemble.price_makers_)
                 pm.pm_.update_next_action_time();
             const TimeType t_algo = std::ranges::min_element( 
-                    price_makers.begin(), 
-                    price_makers.end(),
+                    ensemble.price_makers_.begin(), 
+                    ensemble.price_makers_.end(),
                     [](const PriceMakerWithRandomParams & a,  const PriceMakerWithRandomParams & b) 
                     { return a.pm_.next_action_time() < b.pm_.next_action_time(); }
                     )->pm_.next_action_time();
@@ -811,7 +826,7 @@ namespace SDB {
                 throw std::runtime_error(std::format("Market time is stuck: {}", t) );
             market.time_ = t;
             eng.time_ = market.time_;
-            for (auto & a : price_makers) a.pm_.markets_state_changed(transport);
+            for (auto & a : ensemble.price_makers_) a.pm_.markets_state_changed(transport);
             transport.send(market.time_);
             if (transport.next_send_time() <= market.time_)
                 throw std::runtime_error(std::format("Transport next send time should have moved : {} - {}",
@@ -824,20 +839,20 @@ namespace SDB {
                 market.wm_ = static_cast<double>(market.bid_prices_[0] * market.ask_sizes_[0] +
                                                  market.ask_prices_[0] * market.bid_sizes_[0]) /
                              static_cast<double>(market.bid_sizes_[0] + market.ask_sizes_[0]);
-
-            market_data.emplace_back( market );
+            if (mkt_out_ptr != nullptr)
+                market_data.emplace_back( market );
             //if (mkt_out_ptr != nullptr) *mkt_out_ptr << market.time_*1e-9/60./60. << ' ' << market.wm_ << '\n'  ;
             
             const double dt = std::isnan( last_param_update_time ) ? 1+EPS : 1e-9*market.time_ - last_param_update_time;
             if (dt >= 1) {
-                for (auto & pm : price_makers) pm.update(dt);
+                ensemble.update(dt);
                 last_param_update_time = 1e-9*market.time_; 
                 if (params_out_ptr != nullptr) {
                     double 
                         sum_cancel  = 0 , sumsq_cancel = 0,
                                     sum_price  = 0 , sumsq_price = 0,
                                     sum_size  = 0 , sumsq_size = 0;
-                    for (const auto & pm : price_makers ) {
+                    for (const auto & pm : ensemble.price_makers_ ) {
                         sum_cancel += pm.get_cancellation_period(); 
                         sumsq_cancel += pm.get_cancellation_period()*pm.get_cancellation_period(); 
                         sum_price += pm.get_order_price_mean();
@@ -845,19 +860,21 @@ namespace SDB {
                         sum_size += pm.order_size_mean();
                         sumsq_size += pm.order_size_mean()*pm.order_size_mean();
                     }
-                    const double mean_cancel = sum_cancel/price_makers.size();
-                    const double std_cancel = std::sqrt(sumsq_cancel/price_makers.size() - mean_cancel*mean_cancel);
-                    const double mean_price = sum_price/price_makers.size();
-                    const double std_price = std::sqrt(sumsq_price/price_makers.size() - mean_price*mean_price);
-                    const double mean_size = sum_size/price_makers.size();
-                    const double std_size = std::sqrt(sumsq_size/price_makers.size() - mean_size*mean_size);
+                    const double mean_cancel = sum_cancel/ensemble.price_makers_.size();
+                    const double std_cancel = std::sqrt(sumsq_cancel/ensemble.price_makers_.size() - mean_cancel*mean_cancel);
+                    const double mean_price = sum_price/ensemble.price_makers_.size();
+                    const double std_price = std::sqrt(sumsq_price/ensemble.price_makers_.size() - mean_price*mean_price);
+                    const double mean_size = sum_size/ensemble.price_makers_.size();
+                    const double std_size = std::sqrt(sumsq_size/ensemble.price_makers_.size() - mean_size*mean_size);
 
                     *params_out_ptr << last_param_update_time/60./60. << ' ' << market.wm_ 
-                        << ' ' <<  mean_cancel << ' ' << std_cancel
-                        << ' ' <<  mean_price << ' ' << std_price
-                        << ' ' <<  mean_size << ' ' << std_size
+                        //<< ' ' <<  mean_cancel << ' ' << std_cancel
+                        << ' ' <<  mean_price //<< ' ' << std_price
+                        //<< ' ' <<  mean_size << ' ' << std_size
+                        << ' ' << market.bid_ages_.front() 
+                        << ' ' << market.ask_ages_.front() 
                         ;
-                    //for (const auto & pm : price_makers ) *params_out_ptr<< ' '  << pm.pm_.cancellation_.lambda();
+                    //for (const auto & pm : ensemble.price_makers_ ) *params_out_ptr<< ' '  << pm.pm_.cancellation_.lambda();
                     *params_out_ptr<< '\n'  ;
                 }
             }
@@ -873,9 +890,9 @@ namespace SDB {
             while (end < market_data.size() and market_data[end].time_ < 1e9*60*60*23.5 ) 
                 ++end; 
             constexpr size_t nextra = 5;
-            constexpr size_t C = nextra  + 1 + 6*market.bid_prices_.size() ;
-            torch::Tensor market_torch = torch::empty({int64_t(end-start),  C});
-            if( C != market_torch.size(1) ) 
+            const size_t C = nextra  + 1 + 6*market.bid_prices_.size() ;
+            torch::Tensor market_torch = torch::empty({int64_t(end-start),  int64_t(C)});
+            if( C != size_t(market_torch.size(1)) ) 
                 throw std::runtime_error("I don't know these matrices");
 
             SPDLOG_INFO("Allocated : {}", market_data.size() );
