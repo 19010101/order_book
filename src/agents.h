@@ -231,13 +231,25 @@ namespace SDB {
         LocalOrderIDType local_id_counter_;
         boost::random::mt19937 & mt_;
         boost::random::exponential_distribution<> placement_, cancellation_;
-        boost::random::normal_distribution<double> order_price_;
+        boost::random::exponential_distribution<> order_price_;
         boost::random::poisson_distribution<SizeType, double> order_size_;
-        boost::random::bernoulli_distribution<double> aggressive_;
+        private:
+        boost::random::bernoulli_distribution<double> side_, aggressive_;
+        public:
         const size_t n_orders_ ;
         TimeType placement_time_ ; 
 
         CancellationTimes cancellation_times_ ; 
+
+        double side_param() const { return side_.p() ;}
+        double aggressive_param() const { return aggressive_.p() ;}
+        void side_param(const double p) {
+            side_.param( boost::random::bernoulli_distribution<double>::param_type (p) ) ;
+            SPDLOG_INFO("side_param(): p={}, p={}, cid:{}", p, side_param(), client_id_) ;
+        }
+        void aggressive_param(const double p) {
+            aggressive_.param( boost::random::bernoulli_distribution<double>::param_type (p) ) ;
+        }
 
         PriceMakerAroundWM(
                 const ClientIDType client_id, 
@@ -246,7 +258,7 @@ namespace SDB {
                 const double placement_lambda, 
                 const double cancellation_lambda,
                 const double order_price_mean, //how far from wm the price is
-                const double order_price_std,
+                //const double order_price_std,
                 const double order_size_mean,
                 const double aggressive_probability,
                 const size_t n_orders
@@ -255,8 +267,9 @@ namespace SDB {
                 mt_(mt),
                 placement_(placement_lambda), 
                 cancellation_(cancellation_lambda) , 
-                order_price_(order_price_mean, order_price_std ),
+                order_price_(1./order_price_mean ),
                 order_size_(std::min(static_cast<SizeType>(order_size_mean), std::numeric_limits< SizeType >::max() )),
+                side_(0.5),
                 aggressive_(aggressive_probability),
                 n_orders_(n_orders)
         {
@@ -296,11 +309,15 @@ namespace SDB {
                     orders_.size() + unacked_orders_.size() < n_orders_ 
                 ) {
                     const double & wm = std::isnan(market_.wm_) ? 0 : market_.wm_; 
-                    const double continuous_price = order_price_(mt_) + wm;
-                    const auto price = safe_round<PriceType>(continuous_price);
+                    const auto dp = order_price_(mt_);
+                    const Side passive_side = side_(mt_) ? Side::Offer : Side::Bid;
                     const bool aggressive = aggressive_(mt_);
-                    const Side passive_side = (price >= wm) ? Side::Offer : Side::Bid;
                     const Side side = aggressive ? get_other_side(passive_side) : passive_side;
+                    const double continuous_price =  passive_side == Side::Offer ? wm + dp : wm - dp;
+                    //new we round up if offer, round down if buying
+                    const auto price = safe_round<PriceType>(
+                            side==Side::Offer ? std::ceil(continuous_price+EPS) : std::floor(continuous_price-EPS)
+                    );
                     const LocalOrderIDType local_order_id = local_id_counter_++;
                     //std::cerr << "will place order with local id " << local_order_id << std::endl;
                     auto order_size = order_size_(mt_);
@@ -346,7 +363,7 @@ namespace SDB {
             }
 
         void handle_message( const OrderData & order_data, const NotifyMessageType mtype, 
-                const SizeType trade_size, const PriceType trade_price  ) {
+                const SizeType , const PriceType   ) {
             switch (mtype) {
                 case NotifyMessageType::Ack : 
                     { 
@@ -767,14 +784,13 @@ namespace SDB {
                     find_center_shift_for_range_bound(order_size_min_, order_size_center_, order_size_max_)),
             cancellation_( 0.0 ,  0.0 , .00010 , .01 ) , 
             order_size_  ( 0.0 ,  0.0 , .00010 , .01 ) , 
-            price_mean_  ( 0.0 ,  2.0 , .00100 , .1  ) ,
+            price_mean_  ( 1.0 ,  1.0 , .00100 , .1  ) ,
             pm_(cid, market , mt_,
                     1.,  
                     //sln(cancellation_.x_, freq_center_, freq_width_, freq_lower_limit_), 
                     1/range_bound(cancellation_.x_, period_min_, period_max_, 
                         period_center_shift_),
                     price_mean_.x_,
-                    3.,
                     range_bound(order_size_.x_, order_size_min_, order_size_max_, 
                         order_size_center_shift_),
                     0.05, 10 ) {}
@@ -783,9 +799,7 @@ namespace SDB {
                 const double price_mean,  
                 const double order_size_mean ) { 
             pm_.cancellation_.param( 1/cancellation_period  ) ;
-            pm_.order_price_.param( 
-                    boost::random::normal_distribution<double>::param_type(
-                        price_mean, pm_.order_price_.sigma() ) );
+            pm_.order_price_.param( 1./price_mean);
             pm_.order_size_.param(
                     boost::random::poisson_distribution<SizeType, double>::param_type( 
                         order_size_mean    ) 
@@ -804,7 +818,7 @@ namespace SDB {
                   );
         }
         double get_cancellation_period() const { return 1./pm_.cancellation_.lambda(); }
-        double get_order_price_mean() const { return pm_.order_price_.mean() ; }
+        double get_order_price_mean() const { return 1./pm_.order_price_.lambda() ; }
         double order_size_mean() const { return pm_.order_size_.mean() ; }
     };
 
@@ -829,8 +843,10 @@ namespace SDB {
         FixedPriceMakerEnsemble (const size_t n_agents, boost::random::mt19937 & mt) { 
             for (size_t i = 0; i < n_agents; ++i ) 
                 price_makers_.emplace_back( i, market_, mt);
-            for (size_t i = 0; i < n_agents; ++i ) 
-                price_makers_[i].update( 10,  (i%2) ? 1 : -1 , 10 ); 
+            for (size_t i = 0; i < n_agents; ++i ) {
+                price_makers_[i].update( 10,  1, 10 );
+                price_makers_[i].pm_.side_param( (i % 2) ? 1 : 0);
+            }
         }
         void  update(const double ) { }
         void update( 
@@ -856,11 +872,26 @@ namespace SDB {
 
         double last_param_update_time = std::numeric_limits<double>::quiet_NaN();
 
+        bool first = true;
         while ( market.time_ <= t_max) {
             {
                 std::ostringstream out ;
                 out << market;
                 SPDLOG_INFO( "{}", out.str() );
+                if (first) {
+                    for (size_t i = 0; i < ensemble.price_makers_.size(); ++i)
+                        SPDLOG_INFO(
+                        "pm {}: placement: {}s, cancellation: {}s, price mean: {}, size mean: {}, side:{} , aggressive:{}",
+                        i,
+                        1./ensemble.price_makers_[i].pm_.placement_.lambda(),
+                        1./ensemble.price_makers_[i].pm_.cancellation_.lambda(),
+                        1./ensemble.price_makers_[i].pm_.order_price_.lambda(),
+                        ensemble.price_makers_[i].pm_.order_size_.mean(),
+                        ensemble.price_makers_[i].pm_.side_param(),
+                        ensemble.price_makers_[i].pm_.aggressive_param()
+                    );
+                    first = false;
+                }
             }
             for (auto &pm: ensemble.price_makers_)
                 pm.pm_.update_next_action_time();
@@ -917,17 +948,17 @@ namespace SDB {
                     }
                     //const double mean_cancel = sum_cancel/ensemble.price_makers_.size();
                     //const double std_cancel = std::sqrt(sumsq_cancel/ensemble.price_makers_.size() - mean_cancel*mean_cancel);
-                    const double mean_price = sum_price/ensemble.price_makers_.size();
+                    //const double mean_price = sum_price/ensemble.price_makers_.size();
                     //const double std_price = std::sqrt(sumsq_price/ensemble.price_makers_.size() - mean_price*mean_price);
                     //const double mean_size = sum_size/ensemble.price_makers_.size();
                     //const double std_size = std::sqrt(sumsq_size/ensemble.price_makers_.size() - mean_size*mean_size);
-
-                    *params_out_ptr << last_param_update_time/60./60. << ' ' << market.wm_ 
-                        //<< ' ' <<  mean_cancel << ' ' << std_cancel
-                        << ' ' <<  mean_price //<< ' ' << std_price
-                        //<< ' ' <<  mean_size << ' ' << std_size
-                        << ' ' << market.bid_ages_.front() 
-                        << ' ' << market.ask_ages_.front() 
+                    const size_t last = ensemble.price_makers_.size()-1;
+                    const size_t lm1  = last -1 ;
+                    *params_out_ptr << last_param_update_time / 60. / 60. << ' ' << market.wm_
+                            << ' ' << 1./ensemble.price_makers_[lm1 ].pm_.cancellation_.lambda()
+                            << ' ' << 1./ensemble.price_makers_[last].pm_.cancellation_.lambda()
+                            << ' ' << market.bid_ages_.front()
+                            << ' ' << market.ask_ages_.front()
                         ;
                     //for (const auto & pm : ensemble.price_makers_ ) *params_out_ptr<< ' '  << pm.pm_.cancellation_.lambda();
                     *params_out_ptr<< '\n'  ;

@@ -243,11 +243,12 @@ namespace SDB {
         std::vector<double>::const_iterator it_, single_imnt_it_;
         bool simm_started_ ;
         SwitchEnsemble( const size_t n_agents, boost::random::mt19937 & mt, 
-                const double switch_lambda, const double t_max) : 
+                const double switch_lambda, const double t_max,
+                const double buy_sell_param = 0.5) :
             FixedPriceMakerEnsemble(n_agents, mt ) , 
             mt_(mt),
             switch_distribution_(switch_lambda), 
-            buy_sell_distribution_(0.5), 
+            buy_sell_distribution_(buy_sell_param),
             single_imnt_buy_sell_distribution_(0.5), 
             simm_started_(false)
             {
@@ -255,6 +256,8 @@ namespace SDB {
                     switch_times_.push_back( 
                             switch_distribution_(mt) + 
                             (switch_times_.empty() ? 0 : switch_times_.back()) );
+                it_ = switch_times_.begin();
+
                 while (single_imnt_times_.empty() or single_imnt_times_.back() < t_max ) 
                     single_imnt_times_.push_back( 
                             switch_distribution_(mt) + 
@@ -262,9 +265,7 @@ namespace SDB {
                 single_imnt_it_ = single_imnt_times_.begin();
 
                 for (auto & pm : price_makers_) 
-                    pm.pm_.aggressive_.param( 
-                            boost::random::bernoulli_distribution<double>::param_type( 0.0 ) 
-                            );
+                    pm.pm_.aggressive_param( 0.0  );
                 ClientIDType cid = std::numeric_limits<ClientIDType>::min();
                 for (auto & pm :  price_makers_)  cid = std::max(cid, pm.pm_.client_id_ );
                 ++cid ;
@@ -288,27 +289,34 @@ namespace SDB {
             }
             return update;
         }
-        void adjust_directional_agents() { 
-                const double p = buy_sell_distribution_(mt_) ? 3 : -3;
-                const auto i = price_makers_.size()-1;
-                //SPDLOG_INFO( "update p to {} at time : {}", p , 1e-9*market_.time_/60./60. );
-                price_makers_[i].update( 
-                        0.5*60*60,
-                        p,
-                        500000);
-                price_makers_[i].pm_.aggressive_.param( 
-                        boost::random::bernoulli_distribution<double>::param_type( 0.0 ) 
-                        );
+        void adjust_directional_agents(const bool first) {
+            const auto long_index  = first ? price_makers_.size()-2 : price_makers_.size()-1;
+            const auto short_index = first ? price_makers_.size()-1 : price_makers_.size()-2;
+            const auto default_cancellation_lambda = price_makers_[0].pm_.cancellation_.param();
+            price_makers_[short_index].pm_.cancellation_.param( default_cancellation_lambda );
+            price_makers_[long_index ].pm_.cancellation_.param( 1./(0.5 * 60 * 60) );
+            for (size_t i = 0; i < price_makers_.size(); ++i)
+                SPDLOG_INFO(
+                "t: {}, pm {}: placement: {}s, cancellation: {}s, price mean: {}, size mean: {}, side:{} , aggressive:{}",
+                market_.time_*1e-9/(60*60),
+                i,
+                1./price_makers_[i].pm_.placement_.lambda(),
+                1./price_makers_[i].pm_.cancellation_.lambda(),
+                1./price_makers_[i].pm_.order_price_.lambda(),
+                price_makers_[i].pm_.order_size_.mean(),
+                price_makers_[i].pm_.side_param(),
+                price_makers_[i].pm_.aggressive_param()
+            );
         }
-        void update( const double ) { 
-            if (false and not simm_started_ and market_.time_>static_cast<TimeType>(1e9*120) ) {
-                SPDLOG_INFO( "starting at time {}", market_.time_ );
-                single_instrument_market_makers_.front().position_ = 10; 
-                simm_started_ = true;
+        void adjust_directional_agents() {
+            adjust_directional_agents( buy_sell_distribution_(mt_) );
+        }
+        void update( const double ) {
+            if (do_update()) {
+                adjust_directional_agents();
             }
-            //if (do_update()) adjust_directional_agents();
-            if (do_update_single_imnt()) {
-                const SizeType size = single_imnt_buy_sell_distribution_(mt_) ? 10 : -10;
+            if (false and do_update_single_imnt()) {
+                const SizeType size = single_imnt_buy_sell_distribution_(mt_) ? -10 : 10;
                 single_instrument_market_makers_.front().position_ += size;
                 SPDLOG_INFO( "dpos at time {}, new pos: {}, final pos: {}", 
                         market_.time_*1e-9, 
@@ -365,16 +373,16 @@ TEST_CASE( "experiment3", "[Agents]" ) {
     using namespace SDB;
     spdlog::set_level(spdlog::level::info);
     boost::random::mt19937 mt(0);
-    constexpr int ndays = 1;
-    constexpr double t_max = ndays*2*60*60 ; //seconds
+    constexpr int ndays = 100;
+    constexpr double t_max = ndays*24*60*60 ; //seconds
     constexpr double switch_lambda = 1./(60*60);
-    SwitchEnsemble ensemble( 10, mt, switch_lambda, t_max );
-    ensemble.update( 10, 0, 1);
+    SwitchEnsemble ensemble( 10, mt, switch_lambda, t_max, 0.5 );
+    //ensemble.update( 10, 1, 1);
     ensemble.adjust_directional_agents();
     REQUIRE( not ensemble.switch_times_.empty() );
     REQUIRE( ensemble.market_.time_ == 0 );
     std::ofstream params(fmt::format("params.txt"));
-    experiment( 
+    experiment(
             mt, nullptr, &params , ensemble , 
             static_cast<TimeType>( t_max * 1e9 )
     );
