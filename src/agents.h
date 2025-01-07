@@ -959,6 +959,8 @@ namespace SDB {
                             << ' ' << 1./ensemble.price_makers_[last].pm_.cancellation_.lambda()
                             << ' ' << market.bid_ages_.front()
                             << ' ' << market.ask_ages_.front()
+                            << ' ' << market.bid_prices_.front()
+                            << ' ' << market.ask_prices_.front()
                         ;
                     //for (const auto & pm : ensemble.price_makers_ ) *params_out_ptr<< ' '  << pm.pm_.cancellation_.lambda();
                     *params_out_ptr<< '\n'  ;
